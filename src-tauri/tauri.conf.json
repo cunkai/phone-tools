@@ -1,0 +1,76 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "手机管理器",
+  "version": "1.0.0",
+  "identifier": "com.android-toolbox.app",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "手机管理器",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 900,
+        "minHeight": 600,
+        "resizable": true,
+        "fullscreen": false,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": {
+      "tools/*": "tools/"
+    },
+    "fileAssociations": [
+      {
+        "ext": ["apk"],
+        "name": "应用安装包",
+        "description": "应用安装包文件",
+        "role": "Viewer",
+        "mimeType": "application/vnd.android.package-archive"
+      },
+      {
+        "ext": ["apks"],
+        "name": "应用捆绑包",
+        "description": "应用捆绑包文件",
+        "role": "Viewer",
+        "mimeType": "application/octet-stream"
+      }
+    ],
+    "linux": {
+      "deb": {
+        "depends": []
+      },
+      "appimage": {
+        "bundleMediaFramework": false
+      }
+    },
+    "macOS": {
+      "minimumSystemVersion": "10.15"
+    },
+    "windows": {
+      "nsis": {
+        "languages": ["SimpChinese", "English"]
+      }
+    }
+  }
+}
