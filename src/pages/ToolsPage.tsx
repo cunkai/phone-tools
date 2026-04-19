@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { useDeviceStore } from "../store/deviceStore";
 import LoadingSpinner from "../components/LoadingSpinner";
-import { takeScreenshot, getFileList, getLogcat } from "../api/adb";
+import { takeScreenshot, getFileList, getLogcat, hdcScreenshot } from "../api/adb";
 import { onLogOutput } from "../api/events";
 import type { FileInfo } from "../types";
 
@@ -49,7 +49,7 @@ export function saveDeviceScreenshot(base64: string, serial: string) {
 
 const ToolsPage: React.FC = () => {
   const { t } = useTranslation();
-  const { currentDevice } = useDeviceStore();
+  const { currentDevice, devices, fetchDevices } = useDeviceStore();
   const [activeTab, setActiveTab] = useState<ToolTab>("screenshot");
 
   const tabs: { key: ToolTab; labelKey: string }[] = [
@@ -90,7 +90,7 @@ const ToolsPage: React.FC = () => {
 
 const ScreenshotTab: React.FC = () => {
   const { t } = useTranslation();
-  const { currentDevice, fetchDevices } = useDeviceStore();
+  const { currentDevice, devices, fetchDevices } = useDeviceStore();
   const [screenshot, setScreenshot] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -106,7 +106,10 @@ const ScreenshotTab: React.FC = () => {
     setLoading(true);
     setError(null);
     try {
-      const base64 = await takeScreenshot(currentDevice);
+      const platform = devices.find((d) => d.serial === currentDevice)?.platform || "android";
+      const base64 = platform === "harmonyos"
+        ? await hdcScreenshot(currentDevice)
+        : await takeScreenshot(currentDevice);
       setScreenshot(base64);
       // Save to history
       const record: ScreenshotRecord = {

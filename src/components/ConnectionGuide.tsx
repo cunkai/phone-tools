@@ -47,16 +47,6 @@ const steps = [
       </div>
     ),
   },
-  {
-    emoji: "5",
-    titleKey: "guide.step5Title",
-    descKey: "guide.step5Desc",
-    icon: (
-      <div className="w-12 h-12 rounded-full bg-accent-500/20 flex items-center justify-center text-accent-400 text-xl font-bold">
-        5
-      </div>
-    ),
-  },
 ];
 
 const ConnectionGuide: React.FC<ConnectionGuideProps> = ({ isOpen, onClose }) => {

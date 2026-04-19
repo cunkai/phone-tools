@@ -3,10 +3,21 @@ use thiserror::Error;
 use tokio::process::Command;
 use tokio::sync::Semaphore;
 use std::sync::LazyLock;
+use std::collections::HashMap;
+use tokio::sync::Mutex;
 
 /// 全局 HDC 命令并发限制（严格串行，同一时间只允许 1 个 HDC 命令执行）
 /// 这是核心机制：确保上一条 HDC 命令完全结束后才执行下一条，防止设备 offline
 static HDC_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(1));
+
+/// get_device_info 结果缓存（serial -> (result_json, timestamp)）
+/// 5 秒内同一设备不重复获取
+static DEVICE_INFO_CACHE: LazyLock<Mutex<HashMap<String, (String, std::time::Instant)>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// get_device_info 调用级别的去重锁（同一 serial 同时只允许一个调用执行）
+static DEVICE_INFO_LOCK: LazyLock<Mutex<HashMap<String, ()>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// HDC 错误类型
 #[derive(Debug, Error)]
@@ -42,10 +53,16 @@ pub struct HdcDevice {
     pub status: String,
     pub model: String,
     pub brand: String,
-    pub android_version: String,
-    pub sdk_version: String,
+    pub market_name: String,        // Brand + MarketName，如 "HUAWEI nova 14 Ultra"
+    pub android_version: String,    // OSFullName，如 "OpenHarmony-6.0.0.328"
+    pub sdk_version: String,        // SDKAPIVersion
+    pub security_patch: String,     // 安全补丁，如 "2026/03/01"
+    pub kernel_version: String,     // Hongmeng version，如 "HongMeng Kernel 1.12.0"
+    pub incremental_version: String,// IncrementalVersion
+    pub abi_list: String,           // ABIList，如 "arm64-v8a"
     pub battery_level: Option<u8>,
     pub screen_resolution: String,
+    pub max_refresh_rate: Option<u32>,
     pub cpu_info: String,
     pub total_memory: String,
     pub available_storage: String,
@@ -61,10 +78,16 @@ impl Default for HdcDevice {
             status: String::new(),
             model: String::new(),
             brand: String::new(),
+            market_name: String::new(),
             android_version: String::new(),
             sdk_version: String::new(),
+            security_patch: String::new(),
+            kernel_version: String::new(),
+            incremental_version: String::new(),
+            abi_list: String::new(),
             battery_level: None,
             screen_resolution: String::new(),
+            max_refresh_rate: None,
             cpu_info: String::new(),
             total_memory: String::new(),
             available_storage: String::new(),
@@ -103,6 +126,7 @@ pub struct HdcAppInfo {
     pub compile_sdk: String,
     pub app_distribution_type: String,
     pub install_time: String,
+    pub main_ability: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub raw_data: String,
 }
@@ -180,7 +204,7 @@ impl HdcCommand {
     pub async fn devices(&self) -> HdcResult<Vec<HdcDevice>> {
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            self.execute(&["list", "targets", "-v"])
+            self.execute_fast(&["list", "targets", "-v"])
         ).await;
 
         let output = match result {
@@ -192,7 +216,7 @@ impl HdcCommand {
             }
         };
 
-        let valid_statuses = ["Connected", "Ready", "Offline", "Unauthorized"];
+        let valid_statuses = ["Connected", "Ready"];
         let devices: Vec<HdcDevice> = output
             .lines()
             .filter(|line| !line.trim().is_empty())
@@ -339,8 +363,8 @@ impl HdcCommand {
                     .unwrap_or("")
                     .to_string();
 
-                // 如果 label 是资源引用（如 $string:app_name），用 vendor 或 bundleName 代替
-                let vendor = app_info.get("vendor")
+                // organization 是开发公司名（如"杭州随笔记网络技术有限公司"）
+                let vendor = app_info.get("organization")
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
@@ -408,6 +432,11 @@ impl HdcCommand {
                     String::new()
                 };
 
+                let main_ability = json_val.get("mainAbility")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("EntryAbility")
+                    .to_string();
+
                 Some(HdcAppInfo {
                     package_name: bundle_name,
                     app_name,
@@ -423,6 +452,7 @@ impl HdcCommand {
                     compile_sdk,
                     app_distribution_type,
                     install_time,
+                    main_ability,
                     raw_data: json_str.clone(),
                 })
             });
@@ -502,7 +532,7 @@ impl HdcCommand {
             .unwrap_or("")
             .to_string();
 
-        let vendor = app_info.get("vendor")
+        let vendor = app_info.get("organization")
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
@@ -570,6 +600,11 @@ impl HdcCommand {
             String::new()
         };
 
+        let main_ability = json_val.get("mainAbility")
+            .and_then(|v| v.as_str())
+            .unwrap_or("EntryAbility")
+            .to_string();
+
         Ok(HdcAppInfo {
             package_name: bundle_name,
             app_name,
@@ -585,15 +620,16 @@ impl HdcCommand {
             compile_sdk,
             app_distribution_type,
             install_time,
+            main_ability,
             raw_data: json_str.clone(),
         })
     }
 
     /// 启动应用
-    /// `hdc -t serial shell aa start -a EntryAbility -b package`
-    pub async fn start_app(&self, serial: &str, package: &str) -> HdcResult<String> {
+    /// `hdc -t serial shell aa start -a <ability> -b <package>`
+    pub async fn start_app(&self, serial: &str, package: &str, ability: &str) -> HdcResult<String> {
         let output = self
-            .execute(&["-t", serial, "shell", "aa", "start", "-a", "EntryAbility", "-b", package])
+            .execute(&["-t", serial, "shell", "aa", "start", "-a", ability, "-b", package])
             .await?;
         Ok(output.trim().to_string())
     }
@@ -705,51 +741,142 @@ impl HdcCommand {
     /// 获取设备详细信息
     /// 通过 `hdc shell param get` 获取设备属性
     pub async fn get_device_info(&self, serial: &str) -> HdcResult<HdcDevice> {
-        let mut device = HdcDevice::default();
-        device.serial = serial.to_string();
-
-        // ===== 方案：每个信息单独获取，避免分隔符解析问题 =====
-
-        // 1. 设备属性（每条 param get 单独执行，避免解析问题）
-        let get_param = |key: &str| {
-            let serial = serial.to_string();
-            let key = key.to_string();
-            async move {
-                match self.execute(&["-t", &serial, "shell", &format!("param get {}", key)]).await {
-                    Ok(output) => {
-                        let val = output.trim().to_string();
-                        // 过滤错误信息：[Fail]、fail!、空值
-                        if val.is_empty() || val.contains("[Fail]") || val.contains("fail!") || val.contains("Fail]") || val.contains("connect-key") {
-                            eprintln!("[get_param] {} => FAILED", key);
-                            None
-                        } else {
-                            let last_line = val.lines().last().unwrap_or("").trim().to_string();
-                            // 再次检查最后一行
-                            if last_line.is_empty() || last_line.contains("[Fail]") || last_line.contains("fail!") || last_line.contains("connect-key") {
-                                None
-                            } else {
-                                eprintln!("[get_param] {} => '{}'", key, last_line);
-                                Some(last_line)
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("[get_param] {} => ERROR: {}", key, e);
-                        None
+        // 检查缓存（5 秒内不重复获取）
+        {
+            let cache = DEVICE_INFO_CACHE.lock().await;
+            if let Some((cached_json, ts)) = cache.get(serial) {
+                if ts.elapsed().as_secs() < 5 {
+                    eprintln!("[get_device_info] cache hit for {}", serial);
+                    if let Ok(cached_device) = serde_json::from_str::<HdcDevice>(cached_json) {
+                        return Ok(cached_device);
                     }
                 }
             }
+        }
+
+        // 调用级去重：同一 serial 同时只允许一个 get_device_info 执行
+        // 其他调用等待完成后直接读缓存
+        let need_execute = {
+            let mut locks = DEVICE_INFO_LOCK.lock().await;
+            if locks.contains_key(serial) {
+                // 已有调用在执行，释放锁后等待一小段时间再读缓存
+                drop(locks);
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                // 再次检查缓存
+                let cache = DEVICE_INFO_CACHE.lock().await;
+                if let Some((cached_json, ts)) = cache.get(serial) {
+                    if ts.elapsed().as_secs() < 5 {
+                        eprintln!("[get_device_info] cache hit after waiting for {}", serial);
+                        if let Ok(cached_device) = serde_json::from_str::<HdcDevice>(cached_json) {
+                            return Ok(cached_device);
+                        }
+                    }
+                }
+                false
+            } else {
+                locks.insert(serial.to_string(), ());
+                true
+            }
         };
 
-        device.model = get_param("const.product.model").await.unwrap_or_default();
-        device.brand = get_param("const.product.brand").await.unwrap_or_default();
-        device.device_type = get_param("const.product.devicetype").await.unwrap_or_default();
-        device.android_version = get_param("const.build.version").await.unwrap_or_default();
-        device.sdk_version = get_param("ohos.apiversion").await.unwrap_or_default();
-        eprintln!("[get_device_info] props: model='{}', brand='{}', type='{}', ver='{}', api='{}'",
-            device.model, device.brand, device.device_type, device.android_version, device.sdk_version);
+        if !need_execute {
+            // 等待后仍然没有缓存，直接返回默认设备（避免重复执行）
+            let mut device = HdcDevice::default();
+            device.serial = serial.to_string();
+            return Ok(device);
+        }
 
-        // 2. CPU 核心数和频率（hidumper --cpufreq 最准确，包含所有核心）
+        let result = self.get_device_info_inner(serial).await;
+
+        // 执行完毕，释放去重锁
+        {
+            let mut locks = DEVICE_INFO_LOCK.lock().await;
+            locks.remove(serial);
+        }
+
+        result
+    }
+
+    /// get_device_info 实际执行逻辑
+    async fn get_device_info_inner(&self, serial: &str) -> HdcResult<HdcDevice> {
+        let mut device = HdcDevice::default();
+        device.serial = serial.to_string();
+
+        // 1. 设备属性：hidumper -c base 一次获取所有信息（比 5 个 param get 高效）
+        match self.execute(&["-t", serial, "shell", "hidumper -c base"]).await {
+            Ok(output) => {
+                // 检查设备是否断开
+                if output.contains("connect-key") || output.contains("Device not found") {
+                    eprintln!("[get_device_info] device {} disconnected", serial);
+                    return Ok(device);
+                }
+                // 检查是否包含有效数据
+                if !output.contains("Brand:") && !output.contains("ProductModel:") {
+                    eprintln!("[get_device_info] hidumper -c base returned invalid data");
+                    return Ok(device);
+                }
+
+                // 解析键值对
+                for line in output.lines() {
+                    let line = line.trim();
+                    if let Some(colon_pos) = line.find(':') {
+                        let key = line[..colon_pos].trim();
+                        let val = line[colon_pos + 1..].trim();
+
+                        match key {
+                            "Brand" => device.brand = val.to_string(),
+                            "MarketName" => device.market_name = val.to_string(),
+                            "ProductModel" | "SoftwareModel" => {
+                                if device.model.is_empty() { device.model = val.to_string(); }
+                            }
+                            "DeviceType" => device.device_type = val.to_string(),
+                            "OSFullName" => device.android_version = val.to_string(),
+                            "SDKAPIVersion" => device.sdk_version = val.to_string(),
+                            "SecurityPatch" => device.security_patch = val.to_string(),
+                            "IncrementalVersion" => device.incremental_version = val.to_string(),
+                            "ABIList" => device.abi_list = val.to_string(),
+                            _ => {}
+                        }
+                    }
+                }
+
+                // 组合设备名称：Brand + MarketName
+                if !device.brand.is_empty() && !device.market_name.is_empty() {
+                    device.market_name = format!("{} {}", device.brand, device.market_name);
+                }
+
+                eprintln!("[get_device_info] base info: model='{}', brand='{}', name='{}', type='{}', os='{}', sdk='{}', patch='{}'",
+                    device.model, device.brand, device.market_name, device.device_type,
+                    device.android_version, device.sdk_version, device.security_patch);
+            }
+            Err(e) => {
+                eprintln!("[get_device_info] hidumper -c base failed: {}", e);
+                return Ok(device);
+            }
+        }
+
+        // 2. 鸿蒙内核版本（uname -r 不需要 root）
+        match self.execute(&["-t", serial, "shell", "uname -r"]).await {
+            Ok(output) => {
+                let ver = output.trim();
+                if !ver.is_empty() && !ver.contains("denied") && !ver.contains("[Fail]") {
+                    // uname -r 可能返回 "HongMeng Kernel X.XX" 或纯版本号
+                    if ver.contains("HongMeng") || ver.contains("Kernel") {
+                        device.kernel_version = ver.to_string();
+                    } else {
+                        device.kernel_version = format!("HongMeng Kernel {}", ver);
+                    }
+                    eprintln!("[get_device_info] kernel: '{}'", device.kernel_version);
+                } else {
+                    eprintln!("[get_device_info] uname -r failed: {:?}", ver);
+                }
+            }
+            Err(e) => {
+                eprintln!("[get_device_info] uname -r error: {}", e);
+            }
+        }
+
+        // 3. CPU 核心数和频率（hidumper --cpufreq 最准确，包含所有核心）
         match self.execute(&["-t", serial, "shell", "hidumper --cpufreq"]).await {
             Ok(output) => {
                 // 统计核心数：从路径 /cpuN/cpufreq 中提取不同的 N
@@ -870,27 +997,47 @@ impl HdcCommand {
             Err(_) => {}
         }
 
-        // 7. 分辨率
+        // 7. 分辨率 + 最高帧率
         match self.execute(&["-t", serial, "shell", "hidumper -s RenderService -a screen"]).await {
             Ok(output) => {
-                for line in output.lines() {
-                    let trimmed = line.trim();
-                    if trimmed.is_empty() || trimmed.starts_with("---") || trimmed.starts_with("[") {
-                        continue;
-                    }
-                    if let Some(idx) = trimmed.find(|c| c == 'x' || c == 'X') {
-                        let before = trimmed[..idx].trim();
-                        let after = trimmed[idx + 1..].trim();
-                        let w: String = before.chars().rev().take_while(|c| c.is_ascii_digit()).collect::<Vec<_>>().into_iter().rev().collect();
-                        let h: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
-                        if !w.is_empty() && !h.is_empty() {
-                            let w_val = w.parse::<u32>().unwrap_or(0);
-                            let h_val = h.parse::<u32>().unwrap_or(0);
-                            if w_val >= 320 && h_val >= 480 && w_val <= 7680 && h_val <= 4320 {
-                                device.screen_resolution = format!("{}x{}", w_val, h_val);
-                                break;
+                // 跳过包含错误信息的输出
+                if output.contains("[Fail]") || output.contains("connect-key") || output.contains("Device not found") {
+                    eprintln!("[get_device_info] screen resolution: device disconnected");
+                } else {
+                    let mut max_refresh_rate: u32 = 0;
+                    for line in output.lines() {
+                        let trimmed = line.trim();
+                        if trimmed.is_empty() || trimmed.starts_with("---") || trimmed.starts_with("[") {
+                            continue;
+                        }
+                        // 提取最高帧率：supportedMode[0]: 1272x2860, refreshRate=120
+                        if let Some(rr_start) = trimmed.find("refreshRate=") {
+                            let rr_str = &trimmed[rr_start + 12..];
+                            let rr_num: String = rr_str.chars().take_while(|c| c.is_ascii_digit()).collect();
+                            if let Ok(rr) = rr_num.parse::<u32>() {
+                                if rr > max_refresh_rate {
+                                    max_refresh_rate = rr;
+                                }
                             }
                         }
+                        // 提取分辨率
+                        if let Some(idx) = trimmed.find(|c| c == 'x' || c == 'X') {
+                            let before = trimmed[..idx].trim();
+                            let after = trimmed[idx + 1..].trim();
+                            let w: String = before.chars().rev().take_while(|c| c.is_ascii_digit()).collect::<Vec<_>>().into_iter().rev().collect();
+                            let h: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+                            if !w.is_empty() && !h.is_empty() {
+                                let w_val = w.parse::<u32>().unwrap_or(0);
+                                let h_val = h.parse::<u32>().unwrap_or(0);
+                                if w_val >= 320 && h_val >= 480 && w_val <= 7680 && h_val <= 4320 {
+                                    device.screen_resolution = format!("{}x{}", w_val, h_val);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if max_refresh_rate > 0 {
+                        device.max_refresh_rate = Some(max_refresh_rate);
                     }
                 }
             }
@@ -901,8 +1048,11 @@ impl HdcCommand {
             match self.execute(&["-t", serial, "shell", "param get persist.sys.screen.resolution"]).await {
                 Ok(output) => {
                     let val = output.trim();
-                    if val.contains('x') && !val.contains("fail!") {
-                        device.screen_resolution = val.lines().last().unwrap_or("").trim().to_string();
+                    if val.contains('x') && !val.contains("fail!") && !val.contains("[Fail]") && !val.contains("connect-key") {
+                        let last = val.lines().last().unwrap_or("").trim();
+                        if last.contains('x') && !last.contains("[Fail]") {
+                            device.screen_resolution = last.to_string();
+                        }
                     }
                 }
                 Err(_) => {}
@@ -911,6 +1061,12 @@ impl HdcCommand {
 
         eprintln!("[get_device_info] Final device: serial={}, model={}, brand={}, battery={:?}",
             device.serial, device.model, device.brand, device.battery_level);
+
+        // 写入缓存
+        if let Ok(json) = serde_json::to_string(&device) {
+            let mut cache = DEVICE_INFO_CACHE.lock().await;
+            cache.insert(serial.to_string(), (json, std::time::Instant::now()));
+        }
 
         Ok(device)
     }
@@ -939,15 +1095,15 @@ impl HdcCommand {
         let _permit = HDC_SEMAPHORE.acquire().await
             .map_err(|_| HdcError::ExecutionFailed("HDC 并发限制获取失败".to_string()))?;
 
-        let remote_file = "/data/local/tmp/screen.png";
+        let remote_file = "/data/local/tmp/screen.jpeg";
         let local_dir = std::env::temp_dir().join("hdc-toolbox");
-        let local_file = local_dir.join("screen.png");
+        let local_file = local_dir.join("screen.jpeg");
 
         // 确保本地目录存在
         let _ = std::fs::create_dir_all(&local_dir);
 
-        // 步骤1：设备端截图
-        let args = ["-t", serial, "shell", "screencap", "-p", remote_file];
+        // 步骤1：设备端截图（鸿蒙使用 snapshot_display -f 指定存储路径）
+        let args = ["-t", serial, "shell", "snapshot_display", "-f", remote_file];
         let cmd_str = args.join(" ");
         eprintln!("[hdc] +{} | {}", chrono::Local::now().format("%H:%M:%S%.3f"), cmd_str);
 
@@ -963,7 +1119,7 @@ impl HdcCommand {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            eprintln!("[screenshot] screencap failed: {}", stderr.trim());
+            eprintln!("[screenshot] snapshot_display failed: {}", stderr.trim());
             return Err(HdcError::ExecutionFailed(format!("截图失败: {}", stderr.trim())));
         }
 
@@ -1000,25 +1156,16 @@ impl HdcCommand {
             return Err(HdcError::ExecutionFailed("截图返回空数据".to_string()));
         }
 
-        // 检查 PNG 头
-        if data.len() < 4 || &data[0..4] != &[0x89, 0x50, 0x4E, 0x47] {
-            eprintln!("[screenshot] Not PNG! {} bytes", data.len());
-            return Err(HdcError::ExecutionFailed(format!("截图返回了非 PNG 数据 ({} bytes)", data.len())));
+        // 检查 JPEG 头 (FF D8 FF)
+        if data.len() < 3 || &data[0..3] != &[0xFF, 0xD8, 0xFF] {
+            eprintln!("[screenshot] Not JPEG! {} bytes", data.len());
+            return Err(HdcError::ExecutionFailed(format!("截图返回了非 JPEG 数据 ({} bytes)", data.len())));
         }
 
         use base64::Engine;
         let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
         eprintln!("[screenshot] base64 {} chars ({}ms)", b64.len(), elapsed);
         Ok(b64)
-    }
-
-    /// 获取电池信息
-    /// `hdc shell hidumper -s BatteryService`
-    pub async fn get_battery_info(&self, serial: &str) -> HdcResult<String> {
-        let output = self
-            .shell_command(serial, "hidumper -s BatteryService")
-            .await?;
-        Ok(output)
     }
 
     /// 获取存储信息
@@ -1030,11 +1177,72 @@ impl HdcCommand {
         Ok(output)
     }
 
-    /// 获取内存信息
-    /// `hdc shell hidumper -s MemMgrService`
-    pub async fn get_memory_info(&self, serial: &str) -> HdcResult<String> {
+    /// 获取 CPU 使用率
+    /// `hdc shell hidumper --cpuusage`
+    pub async fn get_cpu_usage(&self, serial: &str) -> HdcResult<String> {
         let output = self
-            .shell_command(serial, "hidumper -s MemMgrService")
+            .shell_command(serial, "hidumper --cpuusage")
+            .await?;
+        Ok(output)
+    }
+
+    /// 获取整机内存信息（用 /proc/meminfo，不需要 root）
+    /// `hdc shell cat /proc/meminfo`
+    pub async fn get_total_memory(&self, serial: &str) -> HdcResult<String> {
+        let output = self
+            .shell_command(serial, "cat /proc/meminfo")
+            .await?;
+        Ok(output)
+    }
+
+    /// 获取存储信息（用 df -h，避免 hidumper --storage 超时）
+    /// `hdc shell df -h /data`
+    pub async fn get_storage_detail(&self, serial: &str) -> HdcResult<String> {
+        let output = self
+            .shell_command(serial, "df -h /data")
+            .await?;
+        Ok(output)
+    }
+
+    /// 获取电池信息（需要 -a "-i" 参数）
+    /// `hdc shell hidumper -s BatteryService -a "-i"`
+    pub async fn get_battery_info(&self, serial: &str) -> HdcResult<String> {
+        let output = self
+            .shell_command(serial, "hidumper -s BatteryService -a \"-i\"")
+            .await?;
+        Ok(output)
+    }
+
+    /// 获取网络信息
+    /// `hdc shell hidumper --net`
+    pub async fn get_network_info(&self, serial: &str) -> HdcResult<String> {
+        let output = self
+            .shell_command(serial, "hidumper --net")
+            .await?;
+        Ok(output)
+    }
+
+    /// 获取进程列表
+    /// `hdc shell hidumper -p`
+    pub async fn get_process_list(&self, serial: &str) -> HdcResult<String> {
+        let output = self
+            .shell_command(serial, "hidumper -p")
+            .await?;
+        Ok(output)
+    }
+
+    /// 获取 hidumper -c base 完整设备基础信息
+    pub async fn get_base_info(&self, serial: &str) -> HdcResult<String> {
+        let output = self
+            .shell_command(serial, "hidumper -c base")
+            .await?;
+        Ok(output)
+    }
+
+    /// 获取 GPU 信息（OpenGL ES）
+    pub async fn get_gpu_info(&self, serial: &str) -> HdcResult<String> {
+        let output = self
+            .shell_command(serial, "hidumper -s RenderService -a \"gles\"")
             .await?;
         Ok(output)
     }
@@ -1078,6 +1286,69 @@ impl HdcCommand {
         Ok(output.trim().to_string())
     }
 
+    /// 重启到 recovery 模式
+    /// `hdc -t serial target boot -recovery`
+    pub async fn reboot_recovery(&self, serial: &str) -> HdcResult<String> {
+        let output = self.execute(&["-t", serial, "target", "boot", "-recovery"]).await?;
+        Ok(output.trim().to_string())
+    }
+
+    /// 重启到 bootloader 模式
+    /// `hdc -t serial target boot -bootloader`
+    pub async fn reboot_bootloader(&self, serial: &str) -> HdcResult<String> {
+        let output = self.execute(&["-t", serial, "target", "boot", "-bootloader"]).await?;
+        Ok(output.trim().to_string())
+    }
+
+    /// 关机
+    /// `hdc -t serial target boot shutdown`
+    pub async fn shutdown(&self, serial: &str) -> HdcResult<String> {
+        let output = self.execute(&["-t", serial, "target", "boot", "shutdown"]).await?;
+        Ok(output.trim().to_string())
+    }
+
+    /// 导出 bugreport 到指定文件
+    /// `hdc -t serial bugreport` 输出重定向到文件
+    pub async fn bugreport(&self, serial: &str, output_path: &str) -> HdcResult<String> {
+        let _permit = HDC_SEMAPHORE.acquire().await
+            .map_err(|_| HdcError::ExecutionFailed("HDC 并发限制获取失败".to_string()))?;
+
+        let args = ["-t", serial, "bugreport"];
+        let cmd_str = args.join(" ");
+        eprintln!("[hdc] +{} | {}", chrono::Local::now().format("%H:%M:%S%.3f"), cmd_str);
+
+        let start = std::time::Instant::now();
+        let output = tokio::process::Command::new(&self.hdc_path)
+            .args(&args)
+            .output()
+            .await
+            .map_err(|e| {
+                eprintln!("[hdc] -{} | {} FAILED after {}ms", chrono::Local::now().format("%H:%M:%S%.3f"), cmd_str, start.elapsed().as_millis());
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    HdcError::HdcNotFound
+                } else {
+                    HdcError::ExecutionFailed(format!("执行 hdc bugreport 失败: {}", e))
+                }
+            })?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+        // 写入文件
+        tokio::fs::write(output_path, &stdout).await
+            .map_err(|e| HdcError::ExecutionFailed(format!("写入文件失败 {}: {}", output_path, e)))?;
+
+        eprintln!("[hdc] -{} | {} OK ({}ms, {} bytes -> {})",
+            chrono::Local::now().format("%H:%M:%S%.3f"),
+            cmd_str, start.elapsed().as_millis(), stdout.len(), output_path);
+
+        if !output.status.success() && !stderr.is_empty() {
+            return Err(HdcError::ExecutionFailed(stderr));
+        }
+
+        Ok(format!("bugreport saved to {}", output_path))
+    }
+
     // ==================== 日志 ====================
 
     /// 获取日志
@@ -1100,6 +1371,18 @@ impl HdcCommand {
     /// 获取 HDC 版本
     pub async fn get_version(&self) -> HdcResult<String> {
         let output = self.execute(&["version"]).await?;
+        Ok(output.trim().to_string())
+    }
+
+    /// 重启 HDC 服务（kill + start）
+    pub async fn restart_hdc(&self) -> HdcResult<String> {
+        eprintln!("[restart_hdc] Killing HDC server...");
+        let _ = self.execute_fast(&["kill"]).await;
+        // 等待进程完全退出
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        eprintln!("[restart_hdc] Starting HDC server...");
+        let output = self.execute_fast(&["start"]).await?;
+        eprintln!("[restart_hdc] HDC server restarted: {}", output.trim());
         Ok(output.trim().to_string())
     }
 }

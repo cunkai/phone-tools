@@ -287,7 +287,19 @@ pub fn parse_size_string(s: &str) -> u64 {
         .unwrap_or(0)
 }
 
+/// 将内存字节数向上取整到整数 GB（二进制）
+/// 例如 3.7 GB → 4 GB，11.7 GB → 12 GB，4.0 GB → 4 GB
+pub fn round_up_memory_gb(bytes: u64) -> u64 {
+    let gb_1024 = bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+    if gb_1024 <= 0.0 {
+        return bytes;
+    }
+    let rounded = gb_1024.ceil();
+    (rounded * 1024.0 * 1024.0 * 1024.0) as u64
+}
+
 /// 将字节数格式化为人类可读的字符串
+/// 使用二进制单位（1024），>= 1000 GB 自动显示为 TB
 pub fn format_file_size(bytes: u64) -> String {
     const KB: u64 = 1024;
     const MB: u64 = 1024 * KB;
@@ -295,7 +307,12 @@ pub fn format_file_size(bytes: u64) -> String {
     const TB: u64 = 1024 * GB;
 
     if bytes >= TB {
-        format!("{:.2} TB", bytes as f64 / TB as f64)
+        let tb = bytes as f64 / TB as f64;
+        if tb >= 1000.0 {
+            format!("{:.0} TB", tb / 1000.0)
+        } else {
+            format!("{:.2} TB", tb)
+        }
     } else if bytes >= GB {
         format!("{:.2} GB", bytes as f64 / GB as f64)
     } else if bytes >= MB {

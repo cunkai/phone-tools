@@ -13,21 +13,10 @@ const Layout: React.FC = () => {
   const initAppListeners = useAppStore((s) => s.initEventListeners);
   const fetchDevices = useDeviceStore((s) => s.fetchDevices);
   const isReconnecting = useDeviceStore((s) => s.isReconnecting);
-  const [isInitializing, setIsInitializing] = useState(true);
 
   useEffect(() => {
-    // 启动时检查设备：使用 store 的 fetchDevices（统一入口，避免重复调用）
-    const init = async () => {
-      setIsInitializing(true);
-      try {
-        await fetchDevices();
-      } catch {
-        // fetchDevices 内部已处理重连逻辑
-        console.log("[init] fetchDevices failed");
-      }
-      setIsInitializing(false);
-    };
-    init();
+    // 启动时静默获取设备列表，不弹初始化窗口
+    fetchDevices().catch(() => {});
 
     const cleanupDevice = initDeviceListeners();
     const cleanupApp = initAppListeners();
@@ -35,7 +24,7 @@ const Layout: React.FC = () => {
       cleanupDevice();
       cleanupApp();
     };
-  }, []); // 空依赖，只在挂载时执行一次
+  }, []);
 
   return (
     <div className="flex h-screen w-screen bg-dark-950 text-dark-100 overflow-hidden">
@@ -43,7 +32,7 @@ const Layout: React.FC = () => {
       <DeviceNotification />
       <div className="flex flex-col flex-1 min-w-0">
         <header className="flex items-center justify-between px-4 h-12 bg-dark-900/80 border-b border-dark-700/50 backdrop-blur-sm flex-shrink-0">
-          <h1 className="text-sm font-semibold text-dark-200">Android Toolbox</h1>
+          <h1 className="text-sm font-semibold text-dark-200">{t("app.title")}</h1>
           <DeviceSelector />
         </header>
         <main className="flex-1 overflow-auto">
@@ -51,8 +40,8 @@ const Layout: React.FC = () => {
         </main>
       </div>
 
-      {/* 初始化 / 设备离线重连弹窗 */}
-      {(isInitializing || isReconnecting) && (
+      {/* 设备离线重连弹窗 */}
+      {isReconnecting && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60 backdrop-blur-sm">
           <div className="bg-dark-800 border border-dark-700/50 rounded-xl p-6 max-w-sm w-full mx-4 text-center">
             <div className="w-12 h-12 mx-auto mb-4 rounded-full bg-yellow-500/20 flex items-center justify-center">
@@ -67,12 +56,10 @@ const Layout: React.FC = () => {
               </svg>
             </div>
             <h3 className="text-sm font-semibold text-dark-200 mb-2">
-              {isInitializing ? t("device.initializing") : t("device.reconnecting")}
+              {t("device.reconnecting")}
             </h3>
             <p className="text-xs text-dark-400 mb-4">
-              {isInitializing
-                ? t("device.initializingDesc")
-                : t("device.reconnectingDesc")}
+              {t("device.reconnectingDesc")}
             </p>
             <div className="flex items-center justify-center gap-2">
               <div className="w-2 h-2 rounded-full bg-accent-400 animate-bounce" style={{ animationDelay: "0ms" }} />

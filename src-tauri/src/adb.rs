@@ -148,6 +148,28 @@ pub struct AdbCommand {
     adb_path: String,
 }
 
+/// 解析 df -h 的人类可读大小（如 "24G"、"9.4G"、"512M"、"1.8K"）为字节数
+fn parse_df_size(s: &str) -> u64 {
+    let s = s.trim();
+    if s.is_empty() {
+        return 0;
+    }
+    let (num_str, multiplier) = if let Some(n) = s.strip_suffix("T") {
+        (n, 1024u64 * 1024 * 1024 * 1024)
+    } else if let Some(n) = s.strip_suffix("G") {
+        (n, 1024u64 * 1024 * 1024)
+    } else if let Some(n) = s.strip_suffix("M") {
+        (n, 1024u64 * 1024)
+    } else if let Some(n) = s.strip_suffix("K") {
+        (n, 1024u64)
+    } else {
+        // 纯数字，假设是 1K 块
+        return s.parse::<u64>().unwrap_or(0) * 1024;
+    };
+    let num: f64 = num_str.trim().parse().unwrap_or(0.0);
+    (num * multiplier as f64) as u64
+}
+
 impl AdbCommand {
     /// 创建新的 ADB 命令构建器
     pub fn new(adb_path: &str) -> Self {
@@ -274,13 +296,16 @@ impl AdbCommand {
 
         use tokio::io::{AsyncBufReadExt, BufReader};
 
-        // 读取 stderr（adb install 的进度输出在 stderr）
+        // 读取 stderr（adb install 的进度和错误输出都在 stderr）
+        let mut stderr_output = String::new();
         if let Some(stderr) = child.stderr.take() {
             let reader = BufReader::new(stderr);
             let mut lines = reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 let line_trimmed = line.trim();
                 eprintln!("[install] {}", line_trimmed);
+                stderr_output.push_str(line_trimmed);
+                stderr_output.push('\n');
 
                 // 解析进度：格式 "  apk: 45%" 或 "Streaming: 45%"
                 if let Some(pct_str) = line_trimmed.strip_suffix('%') {
@@ -318,10 +343,15 @@ impl AdbCommand {
         let status = child.wait().await.map_err(|e| AdbError::ExecutionFailed(e.to_string()))?;
 
         if !status.success() {
+            // 从 stderr 中提取关键错误信息
+            let error_detail = stderr_output.lines()
+                .find(|l| l.contains("INSTALL_FAILED") || l.contains("Failure") || l.contains("Error"))
+                .unwrap_or(&stderr_output)
+                .trim();
             return Err(AdbError::ExecutionFailed(format!(
-                "adb install failed with exit code {:?}: {}",
+                "adb install failed (exit code {:?}): {}",
                 status.code(),
-                stdout_output.trim()
+                error_detail
             )));
         }
 
@@ -688,12 +718,15 @@ impl AdbCommand {
         use tokio::io::{AsyncBufReadExt, BufReader};
 
         // 读取 stderr
+        let mut stderr_output = String::new();
         if let Some(stderr) = child.stderr.take() {
             let reader = BufReader::new(stderr);
             let mut lines = reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 let line_trimmed = line.trim();
                 eprintln!("[install_multiple] {}", line_trimmed);
+                stderr_output.push_str(line_trimmed);
+                stderr_output.push('\n');
 
                 if let Some(pct_str) = line_trimmed.strip_suffix('%') {
                     let parts: Vec<&str> = pct_str.split(':').collect();
@@ -722,9 +755,13 @@ impl AdbCommand {
         let status = child.wait().await.map_err(|e| AdbError::ExecutionFailed(e.to_string()))?;
 
         if !status.success() {
+            let error_detail = stderr_output.lines()
+                .find(|l| l.contains("INSTALL_FAILED") || l.contains("Failure") || l.contains("Error"))
+                .unwrap_or(&stderr_output)
+                .trim();
             return Err(AdbError::ExecutionFailed(format!(
                 "adb install-multiple failed: {}",
-                stdout_output.trim()
+                error_detail
             )));
         }
 
@@ -1288,6 +1325,9 @@ impl AdbCommand {
     /// 执行 Shell 命令
     /// 对于包含管道、重定向等特殊字符的命令，使用 sh -c 包装
     pub async fn shell_command(&self, serial: &str, cmd: &str) -> AdbResult<String> {
+        let _permit = ADB_SEMAPHORE.acquire().await
+            .map_err(|_| AdbError::ExecutionFailed("ADB 并发限制获取失败".to_string()))?;
+
         // 如果命令包含管道、重定向等 shell 特殊字符，使用 sh -c 包装
         let args: Vec<&str> = if cmd.contains('|') || cmd.contains('>') || cmd.contains('<') || cmd.contains('&') || cmd.contains(';') {
             vec!["-s", serial, "shell", "sh", "-c", cmd]
@@ -1295,16 +1335,35 @@ impl AdbCommand {
             vec!["-s", serial, "shell", cmd]
         };
 
-        // 30 秒超时保护，防止交互式命令（如 top、logcat）卡死
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(30),
-            self.execute(&args)
+            Command::new(&self.adb_path).args(&args).output()
+        ).await;
+
+        match result {
+            Ok(Ok(output)) => Ok(String::from_utf8_lossy(&output.stdout).to_string()),
+            Ok(Err(e)) => Err(AdbError::ExecutionFailed(format!("shell 命令执行失败: {}", e))),
+            Err(_) => Err(AdbError::ExecutionFailed("命令执行超时（30秒），可能是交互式命令，请使用非交互式参数（如 top -n 1）".into())),
+        }
+    }
+
+    /// 终端 shell 命令（不走信号量，用户手动执行优先级最高）
+    pub async fn shell_command_direct(&self, serial: &str, cmd: &str) -> AdbResult<String> {
+        let args: Vec<&str> = if cmd.contains('|') || cmd.contains('>') || cmd.contains('<') || cmd.contains('&') || cmd.contains(';') {
+            vec!["-s", serial, "shell", "sh", "-c", cmd]
+        } else {
+            vec!["-s", serial, "shell", cmd]
+        };
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            self.execute_fast(&args)
         ).await;
 
         match result {
             Ok(Ok(output)) => Ok(output),
             Ok(Err(e)) => Err(e),
-            Err(_) => Err(AdbError::ExecutionFailed("命令执行超时（30秒），可能是交互式命令，请使用非交互式参数（如 top -n 1）".into())),
+            Err(_) => Err(AdbError::ExecutionFailed("命令执行超时（30秒）".into())),
         }
     }
 
@@ -1390,19 +1449,24 @@ impl AdbCommand {
         Ok(crate::utils::parse_memory_info(&output))
     }
 
-    /// 获取存储信息
+    /// 获取存储信息（用户可用容量）
+    /// 总大小 = /data 分区的 Size（向上取整到 16 的倍数 GB）
+    /// 可用 = /data 分区的 Avail
     pub async fn get_storage_info(&self, serial: &str) -> AdbResult<(u64, u64)> {
         let output = self
-            .shell_command(serial, "df /data 2>/dev/null || df /")
+            .shell_command(serial, "df -h /data 2>/dev/null || df -h /")
             .await?;
 
         for line in output.lines() {
-            if line.contains("/data") || (line.contains("/") && !line.starts_with("Filesystem")) {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 4 {
-                    // df 输出的单位是 1K 块
-                    let total = parts[1].parse::<u64>().unwrap_or(0) * 1024;
-                    let available = parts[3].parse::<u64>().unwrap_or(0) * 1024;
+            let trimmed = line.trim();
+            if trimmed.starts_with("Filesystem") || trimmed.is_empty() {
+                continue;
+            }
+            let parts: Vec<&str> = trimmed.split_whitespace().collect();
+            if parts.len() >= 4 {
+                let total = parse_df_size(parts[1]);
+                let available = parse_df_size(parts[3]);
+                if total > 0 {
                     return Ok((total, available));
                 }
             }
@@ -2155,6 +2219,45 @@ for s in strings:
         Ok(output.trim().to_string())
     }
 
+    /// 导出 bugreport 到指定文件
+    /// `adb -s serial bugreport` 输出写入文件
+    pub async fn bugreport(&self, serial: &str, output_path: &str) -> AdbResult<String> {
+        let args = ["-s", serial, "bugreport"];
+        let cmd_str = args.join(" ");
+        eprintln!("[adb] +{} | {}", chrono::Local::now().format("%H:%M:%S%.3f"), cmd_str);
+
+        let start = std::time::Instant::now();
+        let output = tokio::process::Command::new(&self.adb_path)
+            .args(&args)
+            .output()
+            .await
+            .map_err(|e| {
+                eprintln!("[adb] -{} | {} FAILED after {}ms", chrono::Local::now().format("%H:%M:%S%.3f"), cmd_str, start.elapsed().as_millis());
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    AdbError::AdbNotFound
+                } else {
+                    AdbError::ExecutionFailed(format!("执行 adb bugreport 失败: {}", e))
+                }
+            })?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+        // 写入文件
+        tokio::fs::write(output_path, &stdout).await
+            .map_err(|e| AdbError::ExecutionFailed(format!("写入文件失败 {}: {}", output_path, e)))?;
+
+        eprintln!("[adb] -{} | {} OK ({}ms, {} bytes -> {})",
+            chrono::Local::now().format("%H:%M:%S%.3f"),
+            cmd_str, start.elapsed().as_millis(), stdout.len(), output_path);
+
+        if !output.status.success() && !stderr.is_empty() {
+            return Err(AdbError::ExecutionFailed(stderr));
+        }
+
+        Ok(format!("bugreport saved to {}", output_path))
+    }
+
     /// 重置 ADB 服务（kill-server + start-server）
     pub async fn reset_adb(&self) -> AdbResult<String> {
         eprintln!("[reset_adb] Killing ADB server...");
@@ -2180,11 +2283,89 @@ for s in strings:
     // ==================== Feature 3: 帧率检测 ====================
 
     /// 获取 dumpsys gfxinfo 输出并解析帧率
+    /// 如果 gfxinfo 无效，回退到 SurfaceFlinger --latency
     pub async fn get_gfxinfo(&self, serial: &str, package: &str) -> AdbResult<String> {
         let output = self
             .shell_command(serial, &format!("dumpsys gfxinfo {} reset", package))
             .await?;
         Ok(output)
+    }
+
+    /// 获取 SurfaceFlinger latency 数据用于计算帧率
+    pub async fn get_surfaceflinger_latency(&self, serial: &str) -> AdbResult<String> {
+        // 直接执行，不用 sh -c（避免引号转义问题）
+        let output = self
+            .execute(&["-s", serial, "shell", "dumpsys", "SurfaceFlinger", "--latency"])
+            .await?;
+        Ok(output)
+    }
+
+    /// 从 SurfaceFlinger --latency 输出解析帧率
+    /// 输出格式：可能包含多个窗口的数据段，每段之间有空行分隔
+    /// 每行三列纳秒时间戳（desired present, actual present, frame ready）
+    /// 通过相邻两帧的 actual present 时间差计算帧间隔
+    pub fn parse_fps_from_latency(latency: &str) -> Option<f32> {
+        // 按空行分割成多个窗口的数据段
+        let segments: Vec<&str> = latency.split("\n\n").collect();
+
+        let mut best_fps: Option<f32> = None;
+
+        for segment in segments {
+            let mut timestamps: Vec<u64> = Vec::new();
+
+            for line in segment.lines() {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                // 跳过标题行和无效行
+                if parts.len() < 3 {
+                    continue;
+                }
+                // 第二列是 actual present time
+                if let Ok(t) = parts[1].parse::<u64>() {
+                    // 跳过无效值（9223372036854775807 = i64::MAX）
+                    if t < 9223372036854775807u64 {
+                        timestamps.push(t);
+                    }
+                }
+            }
+
+            if timestamps.len() < 2 {
+                continue;
+            }
+
+            // 取最近的帧计算平均帧间隔
+            let recent = if timestamps.len() > 30 {
+                &timestamps[timestamps.len() - 30..]
+            } else {
+                &timestamps[..]
+            };
+
+            let mut total_delta_ns: u64 = 0;
+            let mut count = 0;
+            for i in 1..recent.len() {
+                let delta = recent[i].saturating_sub(recent[i - 1]);
+                if delta > 0 && delta < 1_000_000_000u64 {
+                    // 过滤异常值（>1秒的帧间隔视为掉帧/暂停）
+                    total_delta_ns += delta;
+                    count += 1;
+                }
+            }
+
+            if count == 0 {
+                continue;
+            }
+
+            let avg_delta_ns = total_delta_ns as f64 / count as f64;
+            let fps = 1_000_000_000.0 / avg_delta_ns;
+
+            if fps > 0.0 && fps < 500.0 {
+                // 取帧数最多的窗口（最可能是前台应用）
+                if best_fps.is_none() || timestamps.len() > 10 {
+                    best_fps = Some(fps as f32);
+                }
+            }
+        }
+
+        best_fps
     }
 
     /// 从 gfxinfo 输出中解析帧率

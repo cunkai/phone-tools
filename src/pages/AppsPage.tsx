@@ -24,7 +24,6 @@ const AppsPage: React.FC = () => {
     setFilterType,
     setSortBy,
     setSelectedApp,
-    prioritizeApp,
   } = useAppsStore();
 
   const [confirmAction, setConfirmAction] = useState<{
@@ -35,7 +34,10 @@ const AppsPage: React.FC = () => {
 
   useEffect(() => {
     if (currentDevice) {
-      fetchApps(currentDevice);
+      // 只有 apps 为空时才全量加载，否则不重复获取（用户可手动刷新）
+      if (apps.length === 0) {
+        fetchApps(currentDevice);
+      }
     }
   }, [currentDevice]);
 
@@ -59,7 +61,7 @@ const AppsPage: React.FC = () => {
     }
 
     if (sortBy === "name") {
-      result.sort((a, b) => a.app_name.localeCompare(b.app_name) || a.package_name.localeCompare(b.package_name));
+      result.sort((a, b) => a.package_name.localeCompare(b.package_name));
     } else if (sortBy === "size") {
       result.sort((a, b) => {
         const parseSize = (s: string) => {
@@ -177,23 +179,22 @@ const AppsPage: React.FC = () => {
             </div>
           ) : (
             <div className="border border-dark-700/50 rounded-xl overflow-hidden">
-              <table className="w-full text-sm">
+              <table className="w-full text-sm" style={{ minWidth: hasHarmonyFields ? 900 : 640 }}>
                 <thead className="bg-dark-800/80 sticky top-0 z-10">
-                  <tr className="text-dark-400 text-xs">
-                    <th className="text-left px-4 py-3 font-medium w-8">#</th>
-                    <th className="text-left px-4 py-3 font-medium">{t("apps.appName")}</th>
-                    <th className="text-left px-4 py-3 font-medium">{t("apps.packageName")}</th>
-                    <th className="text-left px-4 py-3 font-medium">{t("install.version")}</th>
-                    <th className="text-left px-4 py-3 font-medium">{t("apps.size")}</th>
-                    <th className="text-left px-4 py-3 font-medium">{t("apps.installTime")}</th>
-                    <th className="text-left px-4 py-3 font-medium">{t("apps.type")}</th>
+                  <tr className="text-dark-400 text-xs whitespace-nowrap">
+                    <th className="text-left px-3 py-3 font-medium w-10">#</th>
+                    <th className="text-left px-3 py-3 font-min-w-[200px]">{t("apps.packageName")}</th>
+                    <th className="text-left px-3 py-3 font-medium">{t("install.version")}</th>
+                    <th className="text-left px-3 py-3 font-medium">{t("apps.size")}</th>
+                    <th className="text-left px-3 py-3 font-medium">{t("apps.installTime")}</th>
+                    <th className="text-left px-3 py-3 font-medium whitespace-nowrap">{t("apps.type")}</th>
                     {hasHarmonyFields && (
                       <>
-                        <th className="text-left px-4 py-3 font-medium">{t("apps.vendor")}</th>
-                        <th className="text-left px-4 py-3 font-medium">{t("apps.installSource")}</th>
+                        <th className="text-left px-3 py-3 font-medium whitespace-nowrap">{t("apps.vendor")}</th>
+                        <th className="text-left px-3 py-3 font-medium whitespace-nowrap">{t("apps.installSource")}</th>
                       </>
                     )}
-                    <th className="text-right px-4 py-3 font-medium w-24">{t("apps.actions")}</th>
+                    <th className="text-right px-3 py-3 font-medium w-20">{t("apps.actions")}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -202,10 +203,6 @@ const AppsPage: React.FC = () => {
                       key={app.package_name}
                       onClick={() => {
                         setSelectedApp(selectedApp?.package_name === app.package_name ? null : app);
-                        // 如果该应用还没有详情，优先加载
-                        if (!app.version_name && currentPlatform === "harmonyos") {
-                          prioritizeApp(app.package_name);
-                        }
                       }}
                       className={`border-t border-dark-700/30 cursor-pointer transition-colors ${
                         selectedApp?.package_name === app.package_name
@@ -213,28 +210,20 @@ const AppsPage: React.FC = () => {
                           : "hover:bg-dark-800/40"
                       }`}
                     >
-                      <td className="px-4 py-2.5 text-dark-500 text-xs">{idx + 1}</td>
-                      <td className="px-4 py-2.5">
-                        <div className="flex items-center gap-2">
-                          <div className="w-7 h-7 rounded bg-dark-700 flex items-center justify-center text-dark-400 text-xs font-medium flex-shrink-0">
-                            {(app.app_name || app.package_name).split('.').pop()?.charAt(0).toUpperCase() || "?"}
-                          </div>
-                          <span className="text-dark-200 font-medium truncate max-w-[180px]">{app.app_name || app.package_name}</span>
-                        </div>
-                      </td>
-                      <td className="px-4 py-2.5 text-dark-400 font-mono text-xs truncate max-w-[200px]" title={app.package_name}>
+                      <td className="px-3 py-2 text-dark-500 text-xs whitespace-nowrap">{idx + 1}</td>
+                      <td className="px-3 py-2 text-dark-200 font-mono text-xs whitespace-nowrap" title={app.package_name}>
                         {app.package_name}
                       </td>
-                      <td className="px-4 py-2.5 text-dark-300 text-xs whitespace-nowrap">
+                      <td className="px-3 py-2 text-dark-300 text-xs whitespace-nowrap">
                         {app.version_name || "-"}
                         {app.version_code && (
                           <span className="text-dark-500 ml-1">({app.version_code})</span>
                         )}
                       </td>
-                      <td className="px-4 py-2.5 text-dark-300 text-xs whitespace-nowrap">{app.app_size || "-"}</td>
-                      <td className="px-4 py-2.5 text-dark-400 text-xs whitespace-nowrap">{app.install_time || "-"}</td>
-                      <td className="px-4 py-2.5">
-                        <span className={`inline-flex px-1.5 py-0.5 rounded text-xs ${
+                      <td className="px-3 py-2 text-dark-300 text-xs whitespace-nowrap">{app.app_size || "-"}</td>
+                      <td className="px-3 py-2 text-dark-400 text-xs whitespace-nowrap">{app.install_time || "-"}</td>
+                      <td className="px-3 py-2 whitespace-nowrap">
+                        <span className={`inline-flex px-1.5 py-0.5 rounded text-xs whitespace-nowrap ${
                           app.is_system
                             ? "bg-yellow-500/15 text-yellow-400"
                             : "bg-blue-500/15 text-blue-400"
@@ -244,15 +233,15 @@ const AppsPage: React.FC = () => {
                       </td>
                       {hasHarmonyFields && (
                         <>
-                          <td className="px-4 py-2.5 text-dark-400 text-xs truncate max-w-[120px]" title={app.vendor}>
+                          <td className="px-3 py-2 text-dark-400 text-xs whitespace-nowrap max-w-[160px] truncate" title={app.vendor}>
                             {app.vendor || "-"}
                           </td>
-                          <td className="px-4 py-2.5 text-dark-400 text-xs truncate max-w-[140px]" title={app.install_source}>
+                          <td className="px-3 py-2 text-dark-400 text-xs whitespace-nowrap max-w-[180px] truncate" title={app.install_source}>
                             {app.install_source || "-"}
                           </td>
                         </>
                       )}
-                      <td className="px-4 py-2.5 text-right">
+                      <td className="px-3 py-2 text-right whitespace-nowrap">
                         <div className="flex items-center justify-end gap-1" onClick={(e) => e.stopPropagation()}>
                           <button
                             onClick={() => currentDevice && launchApp(currentDevice, app.package_name)}
@@ -287,10 +276,9 @@ const AppsPage: React.FC = () => {
           <div className="w-80 bg-dark-800/50 border border-dark-700/50 rounded-xl p-4 flex-shrink-0 overflow-y-auto animate-slide-in">
             <div className="flex flex-col items-center text-center mb-4">
               <div className="w-14 h-14 rounded-xl bg-dark-700 flex items-center justify-center text-dark-300 text-xl font-medium">
-                {(selectedApp.app_name || selectedApp.package_name).split('.').pop()?.charAt(0).toUpperCase() || "?"}
+                {selectedApp.package_name.split('.').pop()?.charAt(0).toUpperCase() || "?"}
               </div>
-              <h3 className="text-sm font-semibold text-dark-100 mt-2">{selectedApp.app_name || selectedApp.package_name}</h3>
-              <p className="text-xs text-dark-500 font-mono mt-0.5 break-all">{selectedApp.package_name}</p>
+              <p className="text-sm font-semibold text-dark-100 mt-2 font-mono break-all">{selectedApp.package_name}</p>
             </div>
 
             <div className="space-y-2.5 mb-4">

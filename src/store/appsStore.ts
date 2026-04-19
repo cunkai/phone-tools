@@ -3,11 +3,6 @@ import type { InstalledApp } from "../types";
 import * as adbApi from "../api/adb";
 import { useDeviceStore } from "./deviceStore";
 
-// 鸿蒙详情加载队列
-let detailQueue: string[] = [];
-let activeLoaders = 0;
-const MAX_CONCURRENT_LOADERS = 3;
-
 interface AppsStore {
   apps: InstalledApp[];
   isLoading: boolean;
@@ -18,7 +13,6 @@ interface AppsStore {
   viewMode: "grid" | "list";
   selectedApp: InstalledApp | null;
   fetchApps: (serial: string) => Promise<void>;
-  prioritizeApp: (packageName: string) => void;
   launchApp: (serial: string, pkg: string) => Promise<void>;
   uninstallApp: (serial: string, pkg: string) => Promise<void>;
   clearData: (serial: string, pkg: string) => Promise<void>;
@@ -40,9 +34,6 @@ export const useAppsStore = create<AppsStore>((set, get) => ({
   selectedApp: null,
 
   fetchApps: async (serial: string) => {
-    // 取消之前的加载
-    detailQueue = [];
-    activeLoaders = 0;
     set({ isLoading: true, error: null });
     try {
       const devices = useDeviceStore.getState().devices;
@@ -64,34 +55,52 @@ export const useAppsStore = create<AppsStore>((set, get) => ({
         }));
         set({ apps: initialApps, isLoading: false });
 
-        // 阶段2：后台逐个加载详情
-        detailQueue = [...packages];
-        const loadNext = async () => {
-          if (detailQueue.length === 0) {
-            activeLoaders--;
-            return;
+        // 阶段2：批量获取详情（合并为一条命令）
+        if (packages.length > 0) {
+          // 分批处理，每批最多 50 个包（避免单条命令过长）
+          const BATCH_SIZE = 50;
+          for (let i = 0; i < packages.length; i += BATCH_SIZE) {
+            const batch = packages.slice(i, i + BATCH_SIZE);
+            try {
+              const details = await adbApi.hdcGetAppsDetailsBatch(serial, batch);
+              set((state) => ({
+                apps: state.apps.map((a) => {
+                  const detail = details.find((d: any) => d.package_name === a.package_name);
+                  return detail ? { ...a, ...detail } : a;
+                }),
+              }));
+            } catch {
+              // 批量失败不影响已加载的数据
+            }
           }
-          const pkg = detailQueue.shift()!;
-          try {
-            const detail = await adbApi.hdcGetAppDetail(serial, pkg);
-            set((state) => ({
-              apps: state.apps.map((a) =>
-                a.package_name === pkg ? { ...a, ...detail } : a
-              ),
-            }));
-          } catch {
-            // 单个失败不影响其他
-          }
-          loadNext();
-        };
-        // 启动 3 个并发加载器
-        activeLoaders = MAX_CONCURRENT_LOADERS;
-        for (let i = 0; i < MAX_CONCURRENT_LOADERS; i++) {
-          loadNext();
         }
       } else {
+        // ===== Android：两阶段加载 =====
+        // 阶段1：快速获取包名列表
         const apps = await adbApi.getInstalledApps(serial, true);
         set({ apps, isLoading: false });
+
+        // 阶段2：批量获取详情（合并为一条命令）
+        const needDetail = apps.filter((a) => !a.version_name);
+        if (needDetail.length > 0) {
+          const packages = needDetail.map((a) => a.package_name);
+          // 分批处理，每批最多 50 个包
+          const BATCH_SIZE = 50;
+          for (let i = 0; i < packages.length; i += BATCH_SIZE) {
+            const batch = packages.slice(i, i + BATCH_SIZE);
+            try {
+              const details = await adbApi.getAppsDetailsBatch(serial, batch);
+              set((state) => ({
+                apps: state.apps.map((a) => {
+                  const detail = details.find((d) => d.package_name === a.package_name);
+                  return detail ? { ...a, ...detail } : a;
+                }),
+              }));
+            } catch {
+              // 批量失败不影响已加载的数据
+            }
+          }
+        }
       }
     } catch (err) {
       set({
@@ -101,21 +110,13 @@ export const useAppsStore = create<AppsStore>((set, get) => ({
     }
   },
 
-  /** 将指定应用移到加载队列前面（用户点击时调用） */
-  prioritizeApp: (packageName: string) => {
-    const idx = detailQueue.indexOf(packageName);
-    if (idx > 0) {
-      detailQueue.splice(idx, 1);
-      detailQueue.unshift(packageName);
-    }
-  },
-
   launchApp: async (serial: string, pkg: string) => {
     try {
       const devices = useDeviceStore.getState().devices;
       const platform = devices.find((d) => d.serial === serial)?.platform || "android";
       if (platform === "harmonyos") {
-        await adbApi.hdcStartApp(serial, pkg);
+        const app = get().apps.find((a) => a.package_name === pkg);
+        await adbApi.hdcStartApp(serial, pkg, app?.main_ability);
       } else {
         await adbApi.startApplication(serial, pkg);
       }
@@ -135,8 +136,6 @@ export const useAppsStore = create<AppsStore>((set, get) => ({
       } else {
         await adbApi.uninstallApp(serial, pkg);
       }
-      // 从队列中移除
-      detailQueue = detailQueue.filter((p) => p !== pkg);
       set((state) => ({
         apps: state.apps.filter((a) => a.package_name !== pkg),
         selectedApp: null,

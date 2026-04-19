@@ -3,6 +3,7 @@ export interface AdbDevice {
   status: string;
   model: string;
   brand: string;
+  market_name: string;
   android_version: string;
   sdk_version: string;
   battery_level: number | null;
@@ -45,6 +46,7 @@ export interface InstalledApp {
   removable?: boolean;       // 是否可卸载
   compile_sdk?: string;      // 编译 SDK 版本
   app_distribution_type?: string; // 分发类型
+  main_ability?: string;       // 主 Ability 名称（鸿蒙）
   raw_data?: string;         // 原始 JSON 数据（调试用）
 }
 
@@ -98,6 +100,47 @@ export interface TopMemoryApp {
   package_name: string;
   memory_used: string;
   memory_used_bytes: number;
+}
+
+export interface HdcPerformanceInfo {
+  cpu_usage: number;
+  memory_total: number;
+  memory_used: number;
+  memory_free: number;
+  battery_level: number;
+  battery_status: string;
+  storage_total: number;
+  storage_used: number;
+  storage_free: number;
+}
+
+export interface HdcMemoryInfo {
+  total: number;
+  used: number;
+  free: number;
+  raw: string;
+}
+
+export interface HdcBatteryInfo {
+  level: number;
+  status: string;
+  temperature: number;
+  voltage: number;
+  current: number;
+  health: string;
+  plugged_type: string;
+  technology: string;
+  remaining_energy: number;
+  total_energy: number;
+  charge_type: string;
+  raw: string;
+}
+
+export interface HdcStorageInfo {
+  total: number;
+  used: number;
+  free: number;
+  raw: string;
 }
 
 export interface DeviceControlState {

@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useDeviceStore } from "../store/deviceStore";
-import { startFpsMonitor, stopFpsMonitor, getFpsData, getBatteryInfo, getInstalledApps } from "../api/adb";
+import { startFpsMonitor, stopFpsMonitor, getFpsData, getBatteryInfo } from "../api/adb";
 import { save } from "@tauri-apps/plugin-dialog";
 import { writeFile } from "@tauri-apps/plugin-fs";
 import type { FpsRecord } from "../types";
@@ -69,25 +69,6 @@ const FpsMonitorPage: React.FC = () => {
   });
   const [startBattery, setStartBattery] = useState<number | null>(null);
   const [endBattery, setEndBattery] = useState<number | null>(null);
-  const [packageName, setPackageName] = useState("");
-  const [appList, setAppList] = useState<{ name: string; pkg: string }[]>([]);
-  const [loadingApps, setLoadingApps] = useState(false);
-
-  // 加载设备已安装应用列表
-  useEffect(() => {
-    if (!currentDevice) return;
-    setLoadingApps(true);
-    getInstalledApps(currentDevice, false)
-      .then((apps) => {
-        setAppList(
-          apps
-            .map((a) => ({ name: a.app_name || a.package_name, pkg: a.package_name }))
-            .sort((a, b) => a.name.localeCompare(b.name))
-        );
-      })
-      .catch(() => {})
-      .finally(() => setLoadingApps(false));
-  }, [currentDevice]);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -270,7 +251,7 @@ const FpsMonitorPage: React.FC = () => {
         setEndBattery(null);
       } catch {}
 
-      await startFpsMonitor(currentDevice, packageName);
+      await startFpsMonitor(currentDevice);
       setIsRunning(true);
       setFpsData([]);
 
@@ -285,7 +266,7 @@ const FpsMonitorPage: React.FC = () => {
     } catch {
       // ignore
     }
-  }, [currentDevice, packageName]);
+  }, [currentDevice]);
 
   // Stop monitoring
   const stopPolling = useCallback(async () => {
@@ -295,7 +276,7 @@ const FpsMonitorPage: React.FC = () => {
       pollRef.current = null;
     }
     try {
-      await stopFpsMonitor(currentDevice, packageName);
+      await stopFpsMonitor(currentDevice);
     } catch {
       // ignore
     }
@@ -325,15 +306,19 @@ const FpsMonitorPage: React.FC = () => {
       setHistory(newHistory);
       saveHistory(newHistory);
     }
-  }, [currentDevice, packageName, fpsData, history, durationSec, batteryDrain]);
+  }, [currentDevice, fpsData, history, durationSec, batteryDrain]);
 
-  // Cleanup
+  // Cleanup：切换页面时自动停止后端监控
   useEffect(() => {
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
       cancelAnimationFrame(animFrameRef.current);
+      // 切换页面时停止后端 FPS 监控任务
+      if (currentDevice) {
+        stopFpsMonitor(currentDevice).catch(() => {});
+      }
     };
-  }, []);
+  }, [currentDevice]);
 
   // Export as PNG
   const handleExport = useCallback(async () => {
@@ -374,7 +359,7 @@ const FpsMonitorPage: React.FC = () => {
       if (batteryDrain !== null && batteryDrain > 0) {
         ctx.fillText(`Battery: -${batteryDrain}%`, 200, h + 38);
       }
-      ctx.fillText(`App: ${packageName}`, 200, h + 56);
+      ctx.fillText(`Device: ${currentDevice}`, 200, h + 56);
 
       // 转换为 blob
       const blob = await new Promise<Blob | null>((resolve) =>
@@ -384,7 +369,7 @@ const FpsMonitorPage: React.FC = () => {
 
       // 用 Tauri save dialog
       const filePath = await save({
-        defaultPath: `fps-${packageName}-${Date.now()}.png`,
+        defaultPath: `fps-${currentDevice}-${Date.now()}.png`,
         filters: [{ name: "PNG", extensions: ["png"] }],
       });
       if (!filePath) return;
@@ -394,7 +379,7 @@ const FpsMonitorPage: React.FC = () => {
     } catch (e) {
       console.error("[fps] Export error:", e);
     }
-  }, [safeFpsData, maxFps, minFps, avgFps, durationSec, batteryDrain, packageName]);
+  }, [safeFpsData, maxFps, minFps, avgFps, durationSec, batteryDrain, currentDevice]);
 
   // Load history session
   const loadSession = useCallback((session: FpsSession) => {
@@ -402,10 +387,6 @@ const FpsMonitorPage: React.FC = () => {
     setStartBattery(null);
     setEndBattery(null);
     setIsRunning(false);
-    // 恢复包名
-    if (session.apps.length > 0) {
-      setPackageName(session.apps[0]);
-    }
   }, []);
 
   if (!currentDevice) {
@@ -423,24 +404,10 @@ const FpsMonitorPage: React.FC = () => {
       {/* Controls */}
       <div className="bg-dark-800/50 border border-dark-700/50 rounded-xl p-6 mb-6">
         <div className="flex items-center gap-3">
-          <select
-            value={packageName}
-            onChange={(e) => setPackageName(e.target.value)}
-            disabled={isRunning || loadingApps}
-            className="flex-1 px-3 py-2 rounded-lg bg-dark-700 border border-dark-600/50 text-dark-100 text-sm focus:outline-none focus:border-accent-500/50 disabled:opacity-50"
-          >
-            <option value="">{loadingApps ? "Loading apps..." : t("fps.packageName")}</option>
-            {appList.map((app) => (
-              <option key={app.pkg} value={app.pkg}>
-                {app.name} ({app.pkg})
-              </option>
-            ))}
-          </select>
           {!isRunning ? (
             <button
               onClick={startPolling}
-              disabled={!packageName.trim()}
-              className="px-4 py-2 rounded-lg bg-accent-500 text-white hover:bg-accent-600 disabled:opacity-50 transition-colors text-sm font-medium"
+              className="px-4 py-2 rounded-lg bg-accent-500 text-white hover:bg-accent-600 transition-colors text-sm font-medium"
             >
               {t("fps.start")}
             </button>

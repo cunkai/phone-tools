@@ -47,6 +47,20 @@ export async function getAppDetails(
   return invoke<InstalledApp>("get_app_details", { serial, package: packageName });
 }
 
+export async function getAppsDetailsBatch(
+  serial: string,
+  packages: string[]
+): Promise<InstalledApp[]> {
+  return invoke<InstalledApp[]>("get_apps_details_batch", { serial, packages });
+}
+
+export async function hdcGetAppsDetailsBatch(
+  serial: string,
+  packages: string[]
+): Promise<any[]> {
+  return invoke<any[]>("hdc_get_apps_details_batch", { serial, packages });
+}
+
 export async function startApplication(
   serial: string,
   packageName: string
@@ -134,6 +148,10 @@ export async function getMemoryInfo(serial: string): Promise<any> {
   return invoke<any>("get_memory_info", { serial });
 }
 
+export async function getAndroidBaseInfo(serial: string): Promise<string> {
+  return invoke<string>("get_android_base_info", { serial });
+}
+
 export async function getFileList(
   serial: string,
   path: string
@@ -171,12 +189,12 @@ export async function resetAdb(): Promise<void> {
 }
 
 // FPS Monitor
-export async function startFpsMonitor(serial: string, packageName: string): Promise<void> {
-  return invoke<void>("start_fps_monitor", { serial, package: packageName });
+export async function startFpsMonitor(serial: string): Promise<void> {
+  return invoke<void>("start_fps_monitor", { serial });
 }
 
-export async function stopFpsMonitor(serial: string, packageName: string): Promise<void> {
-  return invoke<void>("stop_fps_monitor", { serial, package: packageName });
+export async function stopFpsMonitor(serial: string): Promise<void> {
+  return invoke<void>("stop_fps_monitor", { serial });
 }
 
 export async function getFpsData(serial: string): Promise<{ timestamp: number; fps: number; foreground_app: string }[]> {
@@ -295,8 +313,8 @@ export async function hdcGetAppDetail(serial: string, packageName: string): Prom
   return invoke<InstalledApp>("hdc_get_app_detail", { serial, package: packageName });
 }
 
-export async function hdcStartApp(serial: string, packageName: string): Promise<string> {
-  return invoke<string>("hdc_start_app", { serial, package: packageName });
+export async function hdcStartApp(serial: string, packageName: string, ability?: string): Promise<string> {
+  return invoke<string>("hdc_start_app", { serial, package: packageName, ability: ability || "EntryAbility" });
 }
 
 export async function hdcStopApp(serial: string, packageName: string): Promise<string> {
@@ -327,6 +345,36 @@ export async function hdcReboot(serial: string): Promise<string> {
   return invoke<string>("hdc_reboot", { serial });
 }
 
+export async function hdcRebootRecovery(serial: string): Promise<string> {
+  return invoke<string>("hdc_reboot_recovery", { serial });
+}
+
+export async function hdcRebootBootloader(serial: string): Promise<string> {
+  return invoke<string>("hdc_reboot_bootloader", { serial });
+}
+
+export async function hdcShutdown(serial: string): Promise<string> {
+  return invoke<string>("hdc_shutdown", { serial });
+}
+
+export async function hdcBugreport(serial: string, outputPath: string, deviceInfo: Record<string, string>): Promise<string> {
+  return invoke<string>("hdc_bugreport", { serial, outputPath, deviceInfo });
+}
+
+export async function exportBugreport(
+  serial: string,
+  outputPath: string,
+  deviceInfo: Record<string, string>,
+  platform: string,
+  lang: string,
+): Promise<string> {
+  return invoke<string>("export_bugreport", { serial, outputPath, deviceInfo, platform, lang });
+}
+
+export async function cancelBugreport(): Promise<boolean> {
+  return invoke<boolean>("cancel_bugreport");
+}
+
 export async function checkHdcAvailable(): Promise<boolean> {
   return invoke<boolean>("check_hdc_available");
 }
@@ -337,4 +385,83 @@ export async function getHdcPath(): Promise<string> {
 
 export async function setHdcPath(path: string): Promise<void> {
   return invoke<void>("set_hdc_path", { path });
+}
+
+// HarmonyOS 性能监控
+export interface HdcPerformanceInfo {
+  cpu_usage: number;
+  memory_total: number;
+  memory_used: number;
+  memory_free: number;
+  battery_level: number;
+  battery_status: string;
+  storage_total: number;
+  storage_used: number;
+  storage_free: number;
+}
+
+export async function hdcGetPerformanceInfo(serial: string): Promise<HdcPerformanceInfo> {
+  return invoke<HdcPerformanceInfo>("hdc_get_performance_info", { serial });
+}
+
+export async function hdcGetCpuUsage(serial: string): Promise<HdcCpuUsageResult> {
+  return invoke<HdcCpuUsageResult>("hdc_get_cpu_usage", { serial });
+}
+
+export interface HdcCpuUsageResult {
+  usage: number;
+  raw: string;
+}
+
+export interface HdcMemoryInfo {
+  total: number;
+  used: number;
+  free: number;
+  raw: string;
+}
+
+export async function hdcGetMemoryInfo(serial: string): Promise<HdcMemoryInfo> {
+  return invoke<HdcMemoryInfo>("hdc_get_memory_info", { serial });
+}
+
+export interface HdcBatteryInfo {
+  level: number;
+  status: string;
+  temperature: number;
+  voltage: number;
+  current: number;
+  health: string;
+  plugged_type: string;
+  technology: string;
+  remaining_energy: number;
+  total_energy: number;
+  charge_type: string;
+  raw: string;
+}
+
+export async function hdcGetBatteryInfo(serial: string): Promise<HdcBatteryInfo> {
+  return invoke<HdcBatteryInfo>("hdc_get_battery_info", { serial });
+}
+
+export interface HdcStorageInfo {
+  total: number;
+  used: number;
+  free: number;
+  raw: string;
+}
+
+export async function hdcGetStorageInfo(serial: string): Promise<HdcStorageInfo> {
+  return invoke<HdcStorageInfo>("hdc_get_storage_info", { serial });
+}
+
+export async function hdcGetBaseInfo(serial: string): Promise<string> {
+  return invoke<string>("hdc_get_base_info", { serial });
+}
+
+export async function restartAdbService(): Promise<string> {
+  return invoke<string>("restart_adb_service");
+}
+
+export async function restartHdcService(): Promise<string> {
+  return invoke<string>("restart_hdc_service");
 }

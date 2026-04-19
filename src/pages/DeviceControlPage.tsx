@@ -96,25 +96,22 @@ const DeviceControlPage: React.FC = () => {
     if (!currentDevice) return;
 
     const loadDeviceState = async () => {
-      // 亮度
+      // 顺序执行，避免并发 ADB 命令冲击设备
       try {
         const b = await getBrightness(currentDevice);
         setBrightnessState(b);
       } catch {}
 
-      // 音量
       try {
         const v = await getVolume(currentDevice, "music");
         setVolumeState(v);
       } catch {}
 
-      // WiFi
       try {
         const w = await getWifiState(currentDevice);
         setWifiEnabledState(w);
       } catch {}
 
-      // 飞行模式
       try {
         const a = await getAirplaneMode(currentDevice);
         setAirplaneModeState(a);
@@ -136,8 +133,9 @@ const DeviceControlPage: React.FC = () => {
   const loadSettings = useCallback(async () => {
     if (!currentDevice) return;
     try {
-      const [b, w] = await Promise.all([getBrightness(currentDevice), getWifiState(currentDevice)]);
+      const b = await getBrightness(currentDevice);
       setBrightnessState(b);
+      const w = await getWifiState(currentDevice);
       setWifiEnabledState(w);
     } catch {
       // ignore errors

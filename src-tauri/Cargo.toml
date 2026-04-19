@@ -27,3 +27,4 @@ uuid = { version = "1", features = ["v4"] }
 thiserror = "1"
 log = "0.4"
 zip = "2"
+image = "0.25"

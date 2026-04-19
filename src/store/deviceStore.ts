@@ -13,6 +13,31 @@ interface DeviceStaticInfo {
   deviceType: string;
 }
 
+/** 首页设备详情缓存（per serial） */
+interface HomePageCache {
+  batteryLevel: number | null;
+  totalStorage: string;
+  availStorage: string;
+  totalMemory: string;
+  cpuInfo: string;
+  screenRes: string;
+  model: string;
+  brand: string;
+  marketName: string;
+  deviceType: string;
+  osVersion: string;
+  sdkVersion: string;
+  securityPatch: string;
+  kernelVersion: string;
+  incrementalVersion: string;
+  abiList: string;
+  maxRefreshRate: number;
+  screenshot: string | null;
+  baseInfo: string;
+  udid: string;
+  loaded: boolean;
+}
+
 interface DeviceStore {
   devices: AdbDevice[];
   currentDevice: string | null;
@@ -26,6 +51,9 @@ interface DeviceStore {
   // 设备静态信息缓存（per serial，切换设备不丢失）
   staticInfo: Record<string, DeviceStaticInfo>;
   ensureStaticInfo: (serial: string) => Promise<DeviceStaticInfo>;
+  // 首页数据缓存（per serial，切页不丢失）
+  homeCache: Record<string, HomePageCache>;
+  setHomeCache: (serial: string, data: Partial<HomePageCache>) => void;
   fetchDevices: () => Promise<void>;
   pollDevices: () => Promise<void>;
   setCurrentDevice: (serial: string) => void;
@@ -45,6 +73,19 @@ export const useDeviceStore = create<DeviceStore>((set, get) => ({
   adbBusy: false,
   notification: null,
   staticInfo: {},
+  homeCache: {},
+
+  setHomeCache: (serial: string, data: Partial<HomePageCache>) => {
+    const existing = get().homeCache[serial] || {
+      batteryLevel: null, totalStorage: "", availStorage: "",
+      totalMemory: "", cpuInfo: "", screenRes: "",
+      model: "", brand: "", marketName: "", deviceType: "",
+      osVersion: "", sdkVersion: "", securityPatch: "",
+      kernelVersion: "", incrementalVersion: "", abiList: "",
+      screenshot: null, loaded: false,
+    };
+    set({ homeCache: { ...get().homeCache, [serial]: { ...existing, ...data } } });
+  },
 
   ensureStaticInfo: async (serial: string) => {
     const { staticInfo, devices } = get();
@@ -103,44 +144,133 @@ export const useDeviceStore = create<DeviceStore>((set, get) => ({
   fetchDevices: async () => {
     set({ isLoading: true, error: null });
     try {
-      const devices = await adbApi.getAllDevices();
-      set({ devices, isLoading: false });
+      // 第一阶段：快速获取设备列表（并行 ADB + HDC，HDC 不带详情）
+      const [adbDevices, hdcDevices] = await Promise.all([
+        adbApi.getDevices().catch(() => [] as any[]),
+        adbApi.getHdcDevices().catch(() => [] as any[]),
+      ]);
+
+      // HDC 设备优先：同一 serial 以 HDC 为准
+      const hdcSerials = new Set(hdcDevices.map((d: any) => d.serial));
+      const filteredAdb = adbDevices.filter((d: any) => !hdcSerials.has(d.serial));
+      const quickDevices = [...filteredAdb, ...hdcDevices];
+
+      // 立即更新设备列表和当前设备（让前端瞬间显示）
+      set({ devices: quickDevices as any, isLoading: false });
       const { currentDevice } = get();
-      if (currentDevice && !devices.find((d) => d.serial === currentDevice)) {
-        if (devices.length > 0) {
-          set({ currentDevice: devices[0].serial });
-        } else {
-          set({ currentDevice: null });
+      if (!currentDevice && quickDevices.length > 0) {
+        set({ currentDevice: quickDevices[0].serial });
+      } else if (currentDevice && !quickDevices.find((d: any) => d.serial === currentDevice)) {
+        if (quickDevices.length > 0) {
+          set({ currentDevice: quickDevices[0].serial });
         }
-      } else if (!currentDevice && devices.length > 0) {
-        set({ currentDevice: devices[0].serial });
+      }
+
+      // 第二阶段：后台补充 HDC 设备详情（model, brand, cpu 等）
+      // 不再调 getAllDevices（会重复查 ADB + HDC 列表），改为只调 hdc_get_device_info
+      const hdcDevs = hdcDevices as any[];
+      if (hdcDevs.length > 0) {
+        const detailedList = await Promise.all(
+          hdcDevs.map(async (dev: any) => {
+            try {
+              const detailed = await adbApi.hdcGetDeviceInfo(dev.serial);
+              // 保留 devices() 返回的 status
+              detailed.status = dev.status;
+              return detailed;
+            } catch {
+              return dev;
+            }
+          })
+        );
+        // 合并：用详情版本替换快速版本
+        const detailedSerials = new Set(detailedList.map((d: any) => d.serial));
+        const merged = [
+          ...quickDevices.filter((d: any) => !detailedSerials.has(d.serial)),
+          ...detailedList,
+        ];
+        set({ devices: merged as any });
       }
     } catch (err) {
       set({
         error: err instanceof Error ? err.message : "Failed to fetch devices",
         isLoading: false,
       });
-      // 只有在没有鸿蒙设备在线时才触发 ADB 重连
-      const hasHarmonyDevice = get().devices.some((d) => d.platform === "harmonyos" && (d.status === "Connected" || d.status === "Ready"));
-      if (!hasHarmonyDevice) {
-        get().reconnect();
-      }
     }
   },
 
-  /** 心跳轮询：仅查询 ADB 设备（轻量），不查 HDC */
+  /** 心跳轮询：ADB + HDC 并行查询（都很快，~20-70ms） */
   pollDevices: async () => {
     try {
-      const devices = await adbApi.getDevices();
-      const hdcDevices = get().devices.filter((d) => d.platform === "harmonyos");
-      const allDevices = [...devices, ...hdcDevices];
-      set({ devices: allDevices });
+      const [adbDevices, hdcDevices] = await Promise.all([
+        adbApi.getDevices().catch(() => [] as any[]),
+        adbApi.getHdcDevices().catch(() => [] as any[]),
+      ]);
+
+      const existingDevices = get().devices;
+      const existingSerials = new Set(existingDevices.map((d) => d.serial));
+
+      // 合并新发现的设备
+      const hdcSerials = new Set(hdcDevices.map((d: any) => d.serial));
+      const adbSerials = new Set(adbDevices.map((d: any) => d.serial));
+      const filteredAdb = adbDevices.filter((d: any) => !hdcSerials.has(d.serial));
+
+      const newDevices = [...filteredAdb, ...hdcDevices];
+
+      // 更新已有设备的 status，保留详情；添加新设备
+      const updatedDevices = existingDevices.map((ed: any) => {
+        const newDev = newDevices.find((d: any) => d.serial === ed.serial);
+        if (newDev) {
+          // 只更新 status，保留其他详情字段
+          return { ...ed, status: newDev.status };
+        }
+        return ed;
+      });
+
+      // 添加新发现的设备
+      const addedSerials: string[] = [];
+      for (const nd of newDevices) {
+        if (!existingSerials.has(nd.serial)) {
+          updatedDevices.push(nd);
+          addedSerials.push(nd.serial);
+        }
+      }
+
+      // 移除已断开的设备（不在新列表中的）
+      const allSerials = new Set(newDevices.map((d: any) => d.serial));
+      const finalDevices = updatedDevices.filter((d: any) => allSerials.has(d.serial));
+
+      set({ devices: finalDevices as any });
       const { currentDevice } = get();
-      if (currentDevice && !allDevices.find((d) => d.serial === currentDevice)) {
-        if (allDevices.length > 0) {
-          set({ currentDevice: allDevices[0].serial });
+      if (currentDevice && !finalDevices.find((d) => d.serial === currentDevice)) {
+        if (finalDevices.length > 0) {
+          set({ currentDevice: finalDevices[0].serial });
         } else {
           set({ currentDevice: null });
+        }
+      }
+
+      // 新设备插入：自动选中 + 通知
+      if (addedSerials.length > 0) {
+        const newDev = finalDevices.find((d: any) => d.serial === addedSerials[0]);
+        if (newDev) {
+          // 自动选中第一个新设备
+          if (!currentDevice) {
+            set({ currentDevice: newDev.serial });
+          } else {
+            // 已有当前设备，显示通知
+            set({
+              notification: {
+                serial: newDev.serial,
+                brand: newDev.brand || "",
+                model: newDev.model || "",
+                platform: newDev.platform || "android",
+              },
+            });
+            // 5秒后自动消失
+            setTimeout(() => {
+              set({ notification: null });
+            }, 5000);
+          }
         }
       }
     } catch {
@@ -163,13 +293,23 @@ export const useDeviceStore = create<DeviceStore>((set, get) => ({
   connectWifi: async (ip: string, port: string) => {
     set({ isLoading: true, error: null });
     try {
+      // 先尝试鸿蒙 hdc tconn
+      try {
+        const { hdcConnectWifi } = await import("../api/adb");
+        await hdcConnectWifi(`${ip}:${port}`);
+        await get().fetchDevices();
+        set({ isLoading: false });
+        return;
+      } catch {
+        // 鸿蒙连接失败，尝试 Android
+      }
       await adbApi.connectWifiDevice(ip, parseInt(port, 10) || 5555);
       await get().fetchDevices();
+      set({ isLoading: false });
     } catch (err) {
-      set({
-        error: err instanceof Error ? err.message : "Failed to connect",
-        isLoading: false,
-      });
+      const msg = err instanceof Error ? err.message : "";
+      set({ error: msg, isLoading: false });
+      throw new Error(msg || "WIFI_CONNECT_FAILED");
     }
   },
 
@@ -252,10 +392,10 @@ export const useDeviceStore = create<DeviceStore>((set, get) => ({
               platform: newDevice.platform || "android",
             },
           });
-          // 3秒后自动消失
+          // 5秒后自动消失
           setTimeout(() => {
             set({ notification: null });
-          }, 3000);
+          }, 5000);
         }
       });
     }).then((unlisten) => unlisteners.push(unlisten));

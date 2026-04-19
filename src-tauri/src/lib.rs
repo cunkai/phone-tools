@@ -1,4 +1,5 @@
 pub mod adb;
+pub mod automation;
 pub mod commands;
 pub mod events;
 pub mod hdc;
@@ -30,6 +31,7 @@ pub fn run() {
             commands::uninstall_app,
             commands::get_installed_apps,
             commands::get_app_details,
+            commands::get_apps_details_batch,
             commands::start_application,
             commands::stop_application,
             commands::clear_app_data,
@@ -47,6 +49,7 @@ pub fn run() {
             commands::get_battery_info,
             commands::get_storage_info,
             commands::get_memory_info,
+            commands::get_android_base_info,
             // ADB 管理
             commands::check_adb_available,
             commands::get_adb_version,
@@ -97,6 +100,7 @@ pub fn run() {
             commands::hdc_get_installed_apps,
             commands::hdc_get_app_list,
             commands::hdc_get_app_detail,
+            commands::hdc_get_apps_details_batch,
             commands::hdc_start_app,
             commands::hdc_stop_app,
             commands::hdc_shell,
@@ -105,9 +109,26 @@ pub fn run() {
             commands::hdc_pull_file,
             commands::hdc_get_device_info,
             commands::hdc_reboot,
+            commands::hdc_reboot_recovery,
+            commands::hdc_reboot_bootloader,
+            commands::hdc_shutdown,
+            commands::export_bugreport,
+            commands::cancel_bugreport,
             commands::check_hdc_available,
             commands::get_hdc_path,
             commands::set_hdc_path,
+            // HarmonyOS 性能监控
+            commands::hdc_get_performance_info,
+            commands::hdc_get_cpu_usage,
+            commands::hdc_get_memory_info,
+            commands::hdc_get_battery_info,
+            commands::hdc_get_storage_info,
+            commands::hdc_get_base_info,
+            commands::restart_adb_service,
+            commands::restart_hdc_service,
+            automation::execute_action,
+            automation::stop_automation,
+            automation::reset_automation,
         ])
         .setup(|_app| {
             // 应用初始化逻辑

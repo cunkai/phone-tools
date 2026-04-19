@@ -21,6 +21,8 @@ pub struct AppState {
     pub fps_handles: Arc<Mutex<HashMap<String, JoinHandle<()>>>>,
     /// 屏幕流运行标志：key 为 serial
     pub screen_stream_running: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+    /// 自动化执行取消标志
+    pub automation_cancel: Arc<AtomicBool>,
 }
 
 impl AppState {
@@ -36,6 +38,7 @@ impl AppState {
             fps_data: Arc::new(Mutex::new(HashMap::new())),
             fps_handles: Arc::new(Mutex::new(HashMap::new())),
             screen_stream_running: Arc::new(Mutex::new(HashMap::new())),
+            automation_cancel: Arc::new(AtomicBool::new(false)),
         }
     }
 

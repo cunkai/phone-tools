@@ -1,5 +1,8 @@
+use std::collections::HashMap;
 use serde_json::{json, Value};
 use tauri::{Emitter, State};
+use tokio::sync::Mutex;
+use tokio::process::Child;
 
 use crate::adb::{AdbCommand, AdbDevice, AppInfo, ApkInfo, FileInfo, FpsRecord, PerformanceInfo, TopMemoryApp};
 use crate::events::{
@@ -8,6 +11,9 @@ use crate::events::{
     EVENT_SHELL_OUTPUT, EVENT_TRANSFER_PROGRESS,
 };
 use crate::state::AppState;
+
+/// 全局存储 bugreport 子进程，用于取消
+pub static BUGREPORT_CHILD: Mutex<Option<Child>> = Mutex::const_new(None);
 
 /// 获取已连接的设备列表（轻量版，只获取基本信息，不调用 getprop）
 #[tauri::command]
@@ -73,45 +79,52 @@ pub async fn get_devices(state: State<'_, AppState>) -> Result<Vec<AdbDevice>, S
 pub async fn get_all_devices(state: State<'_, AppState>) -> Result<Vec<serde_json::Value>, String> {
     let mut all_devices = Vec::new();
 
-    // 获取 ADB 设备
+    // 并行获取 ADB 和 HDC 设备，避免 ADB 不可用时阻塞 HDC
     let adb_path = state.get_adb_path();
-    let adb = AdbCommand::new(&adb_path);
-    if let Ok(adb_devices) = adb.devices().await {
+    let hdc_path = state.get_hdc_path();
+
+    let adb_handle = tokio::spawn(async move {
+        let adb = AdbCommand::new(&adb_path);
+        adb.devices().await.ok()
+    });
+
+    let hdc_handle = tokio::spawn({
+        let hdc_path = hdc_path.clone();
+        async move {
+            let hdc = crate::hdc::HdcCommand::new(&hdc_path);
+            hdc.devices().await.ok()
+        }
+    });
+
+    // ADB 设备
+    if let Ok(Some(adb_devices)) = adb_handle.await {
         for device in adb_devices {
             all_devices.push(serde_json::to_value(device).unwrap_or_default());
         }
     }
 
-    // 获取 HDC 设备（包含详细信息）
-    let hdc_path = state.get_hdc_path();
-    let hdc = crate::hdc::HdcCommand::new(&hdc_path);
-    match hdc.devices().await {
-        Ok(hdc_devices) => {
-            for device in hdc_devices {
-                let device_status = device.status.clone();
-                // 对每个鸿蒙设备获取详细信息（model, brand 等）
-                let mut detailed = match hdc.get_device_info(&device.serial).await {
-                    Ok(info) => info,
-                    Err(_) => {
-                        if device.serial.is_empty() || device.serial.contains("[Fail]") {
-                            continue;
-                        }
-                        device
+    // HDC 设备（包含详细信息，3秒超时）
+    if let Ok(Some(hdc_devices)) = hdc_handle.await {
+        for device in hdc_devices {
+            let device_status = device.status.clone();
+            let serial_clone = device.serial.clone();
+            let hdc_path_clone = hdc_path.clone();
+            let mut detailed = match tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                crate::hdc::HdcCommand::new(&hdc_path_clone).get_device_info(&serial_clone)
+            ).await {
+                Ok(Ok(info)) => info,
+                _ => {
+                    if device.serial.is_empty() || device.serial.contains("[Fail]") {
+                        continue;
                     }
-                };
-                // 保留 devices() 返回的 status（get_device_info 的 default status 是空的）
-                detailed.status = device_status;
-                // 过滤掉无效设备（model 和 brand 都为空说明设备未授权）
-                if detailed.model.is_empty() && detailed.brand.is_empty() {
-                    eprintln!("[get_all_devices] Skipping invalid HDC device: {}", detailed.serial);
-                    continue;
+                    eprintln!("[get_all_devices] get_device_info timeout for {}, using basic info", device.serial);
+                    device
                 }
-                all_devices.push(serde_json::to_value(detailed).unwrap_or_default());
-            }
-        }
-        Err(e) => {
-            // HDC 不可用时静默忽略（用户可能没有安装 HDC）
-            eprintln!("[get_all_devices] HDC not available: {}", e);
+            };
+            detailed.status = device_status;
+            // 即使 model/brand 为空也不跳过，至少显示 serial
+            all_devices.push(serde_json::to_value(detailed).unwrap_or_default());
         }
     }
 
@@ -443,6 +456,164 @@ pub async fn get_app_details(
     Ok(app_info)
 }
 
+/// 批量获取多个应用的详细信息（合并为一条 shell 命令执行）
+#[tauri::command]
+pub async fn get_apps_details_batch(
+    state: State<'_, AppState>,
+    serial: String,
+    packages: Vec<String>,
+) -> Result<Vec<AppInfo>, String> {
+    let adb_path = state.get_adb_path();
+    let adb = AdbCommand::new(&adb_path);
+
+    if packages.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    eprintln!("[get_apps_details_batch] Batch getting details for {} packages", packages.len());
+
+    // 合并命令：echo MARKER_PKG; cmd; echo MARKER_PKG; cmd; ...
+    let marker = "___PKG_SEP___";
+    let mut combined_parts: Vec<String> = Vec::new();
+    for pkg in &packages {
+        combined_parts.push(format!("echo '{}{}'", marker, pkg));
+        combined_parts.push(format!(
+            "dumpsys package {} | grep -E 'Application Label:|versionName=|versionCode=|firstInstallTime=|userId=|flags=|codePath='",
+            pkg
+        ));
+    }
+    let combined_cmd = combined_parts.join("; ");
+
+    // 一次性执行
+    let output = adb.shell_command(&serial, &combined_cmd).await
+        .map_err(|e| e.to_string())?;
+
+    // 拆分结果：按 marker 分割
+    let mut results: HashMap<String, AppInfo> = HashMap::new();
+
+    let mut current_pkg: String = String::new();
+    let mut current_lines: Vec<String> = Vec::new();
+
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if let Some(pkg_name) = trimmed.strip_prefix(marker) {
+            // 保存上一个包的结果
+            if !current_pkg.is_empty() {
+                results.insert(current_pkg.clone(), parse_app_detail_lines(&current_pkg, &current_lines));
+            }
+            current_pkg = pkg_name.to_string();
+            current_lines.clear();
+        } else if !current_pkg.is_empty() {
+            current_lines.push(trimmed.to_string());
+        }
+    }
+    // 最后一个包
+    if !current_pkg.is_empty() {
+        results.insert(current_pkg.clone(), parse_app_detail_lines(&current_pkg, &current_lines));
+    }
+
+    // 构建返回列表（保持原始顺序）
+    let mut apps: Vec<AppInfo> = Vec::new();
+    for pkg in &packages {
+        if let Some(info) = results.remove(pkg) {
+            apps.push(info);
+        } else {
+            // 解析失败，返回基本信息
+            apps.push(AppInfo {
+                package_name: pkg.clone(),
+                app_name: pkg.rsplit('.').next()
+                    .map(|s| {
+                        let mut c = s.chars();
+                        let f = c.next().map(|ch| ch.to_uppercase().to_string()).unwrap_or_default();
+                        format!("{}{}", f, c.collect::<String>())
+                    })
+                    .unwrap_or_else(|| pkg.clone()),
+                version_name: String::new(),
+                version_code: String::new(),
+                icon_base64: None,
+                install_time: String::new(),
+                app_size: String::new(),
+                is_system: false,
+                uid: 0,
+            });
+        }
+    }
+
+    eprintln!("[get_apps_details_batch] Done: {} packages processed", apps.len());
+    Ok(apps)
+}
+
+/// 从 grep 输出行解析应用详情
+fn parse_app_detail_lines(package: &str, lines: &[String]) -> AppInfo {
+    let mut app_name = String::new();
+    let mut version_name = String::new();
+    let mut version_code = String::new();
+    let mut install_time = String::new();
+    let mut uid: u32 = 0;
+    let mut is_system = false;
+    let mut code_path = String::new();
+
+    for line in lines {
+        if let Some(label) = line.split("Application Label:").nth(1) {
+            let name = label.trim().to_string();
+            if !name.is_empty() {
+                app_name = name;
+            }
+        }
+        if let Some(v) = line.split("versionName=").nth(1) {
+            version_name = v.split_whitespace().next().unwrap_or("").to_string();
+        }
+        if let Some(v) = line.split("versionCode=").nth(1) {
+            version_code = v.split_whitespace().next().unwrap_or("").to_string();
+        }
+        if let Some(t) = line.split("firstInstallTime=").nth(1) {
+            install_time = t.trim().to_string();
+        }
+        if let Some(v) = line.split("userId=").nth(1) {
+            if let Ok(u) = v.trim().parse::<u32>() {
+                uid = u;
+            }
+        }
+        if let Some(v) = line.split("flags=").nth(1) {
+            let flags_str = v.split_whitespace().next().unwrap_or("");
+            // 系统应用标志包含 SYSTEM (0x400)
+            if flags_str.contains("SYSTEM") {
+                is_system = true;
+            }
+        }
+        if let Some(v) = line.split("codePath=").nth(1) {
+            code_path = v.trim().to_string();
+        }
+    }
+
+    // 备用判断：codePath 包含 /system/ 或 /vendor/ 则为系统应用
+    if !is_system && (code_path.contains("/system/") || code_path.contains("/vendor/")) {
+        is_system = true;
+    }
+
+    if app_name.is_empty() {
+        app_name = package.rsplit('.').next()
+            .map(|s| {
+                let mut c = s.chars();
+                let f = c.next().map(|ch| ch.to_uppercase().to_string()).unwrap_or_default();
+                format!("{}{}", f, c.collect::<String>())
+            })
+            .unwrap_or_else(|| package.to_string());
+    }
+
+    AppInfo {
+        package_name: package.to_string(),
+        app_name,
+        version_name,
+        version_code,
+        icon_base64: None,
+        install_time,
+        app_size: String::new(),
+        is_system,
+        uid,
+    }
+}
+
 /// 启动应用
 #[tauri::command]
 pub async fn start_application(
@@ -620,7 +791,7 @@ pub async fn execute_shell(
     let adb_path = state.get_adb_path();
     let adb = AdbCommand::new(&adb_path);
 
-    let output = adb.shell_command(&serial, &command).await.map_err(|e| e.to_string())?;
+    let output = adb.shell_command_direct(&serial, &command).await.map_err(|e| e.to_string())?;
 
     // 发送 shell 输出事件
     let _ = app.emit(EVENT_SHELL_OUTPUT, ShellOutput { output: output.clone() });
@@ -648,33 +819,50 @@ pub async fn get_performance_info(
     state: State<'_, AppState>,
     serial: String,
 ) -> Result<PerformanceInfo, String> {
+    // 鸿蒙设备暂不支持 ADB 性能监控，返回默认值
+    let hdc_path = state.get_hdc_path();
+    let hdc = crate::hdc::HdcCommand::new(&hdc_path);
+    if let Ok(devices) = hdc.devices().await {
+        if devices.iter().any(|d| d.serial == serial) {
+            eprintln!("[get_performance_info] HarmonyOS device {}, skipping ADB commands", serial);
+            return Ok(PerformanceInfo {
+                cpu_usage: 0.0,
+                memory_total: String::new(),
+                memory_used: String::new(),
+                memory_free: String::new(),
+                memory_total_bytes: 0,
+                memory_used_bytes: 0,
+                memory_free_bytes: 0,
+                battery_level: 0,
+                battery_temperature: String::new(),
+                battery_status: String::new(),
+                storage_total: String::new(),
+                storage_used: String::new(),
+                storage_free: String::new(),
+                storage_total_bytes: 0,
+                storage_used_bytes: 0,
+                storage_free_bytes: 0,
+            });
+        }
+    }
+
     let adb_path = state.get_adb_path();
     let adb = AdbCommand::new(&adb_path);
 
     eprintln!("[get_performance_info] Starting for device: {}", serial);
 
-    let (cpu_result, memory_result, battery_result, storage_result) = tokio::join!(
-        async {
-            let r = adb.get_cpu_usage(&serial).await;
-            eprintln!("[get_performance_info] CPU result: {:?}", r);
-            r
-        },
-        async {
-            let r = adb.get_memory_info(&serial).await;
-            eprintln!("[get_performance_info] Memory result: {:?}", r);
-            r
-        },
-        async {
-            let r = adb.get_battery_info(&serial).await;
-            eprintln!("[get_performance_info] Battery result: {:?}", r);
-            r
-        },
-        async {
-            let r = adb.get_storage_info(&serial).await;
-            eprintln!("[get_performance_info] Storage result: {:?}", r);
-            r
-        },
-    );
+    // 顺序执行，避免并发 ADB 命令导致设备掉线
+    let cpu_result = adb.get_cpu_usage(&serial).await;
+    eprintln!("[get_performance_info] CPU result: {:?}", cpu_result);
+
+    let memory_result = adb.get_memory_info(&serial).await;
+    eprintln!("[get_performance_info] Memory result: {:?}", memory_result);
+
+    let battery_result = adb.get_battery_info(&serial).await;
+    eprintln!("[get_performance_info] Battery result: {:?}", battery_result);
+
+    let storage_result = adb.get_storage_info(&serial).await;
+    eprintln!("[get_performance_info] Storage result: {:?}", storage_result);
 
     let cpu_usage = cpu_result.unwrap_or(0.0);
     let (mem_total, mem_used, mem_free) = memory_result.unwrap_or((0, 0, 0));
@@ -705,10 +893,10 @@ pub async fn get_performance_info(
 
     Ok(PerformanceInfo {
         cpu_usage,
-        memory_total: crate::utils::format_file_size(mem_total),
+        memory_total: crate::utils::format_file_size(crate::utils::round_up_memory_gb(mem_total)),
         memory_used: crate::utils::format_file_size(mem_used),
         memory_free: crate::utils::format_file_size(mem_free),
-        memory_total_bytes: mem_total,
+        memory_total_bytes: crate::utils::round_up_memory_gb(mem_total),
         memory_used_bytes: mem_used,
         memory_free_bytes: mem_free,
         battery_level: battery.level,
@@ -990,6 +1178,61 @@ pub async fn get_memory_info(
     }))
 }
 
+/// 获取 Android 设备完整信息（一条命令获取全部）
+#[tauri::command]
+pub async fn get_android_base_info(
+    state: State<'_, AppState>,
+    serial: String,
+) -> Result<String, String> {
+    let adb_path = state.get_adb_path();
+    let adb = AdbCommand::new(&adb_path);
+
+    let cmd = r#"
+echo '=== Device Info ==='
+echo "MARKET_NAME=$(getprop ro.product.marketname 2>/dev/null)"
+echo "MODEL=$(getprop ro.product.model)"
+echo "BRAND=$(getprop ro.product.brand)"
+echo "ANDROID=$(getprop ro.build.version.release)"
+echo "SDK=$(getprop ro.build.version.sdk)"
+echo "PATCH=$(getprop ro.build.version.security_patch)"
+echo "BUILD=$(getprop ro.build.display.id)"
+echo "SERIAL=$(getprop ro.serialno)"
+echo '=== Screen ==='
+echo "RESOLUTION=$(wm size 2>/dev/null | grep -o '[0-9]*x[0-9]*')"
+echo "DENSITY=$(wm density 2>/dev/null | awk '{print $NF}')"
+echo "REFRESH=$(dumpsys display 2>/dev/null | grep 'fps=' | head -1 | sed 's/.*fps=\([0-9.]*\).*/\1/' || dumpsys window displays 2>/dev/null | grep 'refreshRate=' | head -1 | sed 's/.*refreshRate=\([0-9.]*\).*/\1/')"
+echo '=== CPU ==='
+echo "HARDWARE=$(cat /proc/cpuinfo 2>/dev/null | grep 'Hardware' | head -1 | sed 's/Hardware\s*:\s*//')"
+echo "PROCESSOR=$(cat /proc/cpuinfo 2>/dev/null | grep 'Processor' | head -1 | sed 's/Processor\s*:\s*//')"
+echo "CPU_PLATFORM=$(getprop ro.board.platform)"
+echo "CORES=$(ls -d /sys/devices/system/cpu/cpu[0-9]* 2>/dev/null | wc -l)"
+echo "MAX_FREQ=$(cat /sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq 2>/dev/null | awk '{printf "%.0f MHz", $1/1000}')"
+echo "GPU=$(dumpsys SurfaceFlinger 2>/dev/null | grep GLES | head -1 | sed 's/.*GLES\s*:\s*//')"
+echo '=== Memory ==='
+echo "MEM_TOTAL=$(cat /proc/meminfo 2>/dev/null | grep MemTotal | awk '{printf "%.1f GB", $2/1024/1024}')"
+echo "MEM_AVAIL=$(cat /proc/meminfo 2>/dev/null | grep MemAvailable | awk '{printf "%.1f GB", $2/1024/1024}')"
+echo '=== Storage ==='
+echo "STORAGE=$(df -h /data 2>/dev/null | tail -1 | awk '{print $2, $4}')"
+echo '=== Battery ==='
+echo "BAT_LEVEL=$(dumpsys battery 2>/dev/null | grep 'level' | awk '{print $2}')"
+echo "BAT_STATUS=$(dumpsys battery 2>/dev/null | grep 'status' | awk '{print $2}')"
+echo "BAT_HEALTH=$(dumpsys battery 2>/dev/null | grep 'health' | awk '{print $2}')"
+echo "BAT_TEMP=$(dumpsys battery 2>/dev/null | grep 'temperature' | awk '{print $2}')"
+echo "BAT_VOLTAGE=$(dumpsys battery 2>/dev/null | grep 'voltage' | awk '{print $2}')"
+echo '=== Network ==='
+echo "WIFI_IP=$(ifconfig wlan0 2>/dev/null | grep 'inet addr' | awk '{print $2}' | sed 's/addr://' || ip addr show wlan0 2>/dev/null | grep 'inet ' | awk '{print $2}')"
+echo '=== ABI ==='
+echo "ABI_LIST=$(getprop ro.product.cpu.abilist)"
+echo "ABI_PRIMARY=$(getprop ro.product.cpu.abi)"
+echo '=== Kernel ==='
+echo "KERNEL=$(uname -r 2>/dev/null)"
+echo '=== Uptime ==='
+echo "UPTIME=$(uptime 2>/dev/null)"
+"#.trim();
+
+    adb.execute(&["-s", &serial, "shell", cmd]).await.map_err(|e| e.to_string())
+}
+
 // ==================== Feature 1: 重启命令 ====================
 
 /// 重启设备
@@ -1045,38 +1288,31 @@ pub async fn reset_adb(
 
 // ==================== Feature 3: 帧率检测 ====================
 
-/// 启动 FPS 监控
+/// 启动 FPS 监控（基于 SurfaceFlinger --latency，无需包名）
 #[tauri::command]
 pub async fn start_fps_monitor(
     state: State<'_, AppState>,
     serial: String,
-    package: String,
 ) -> Result<String, String> {
     let adb_path = state.get_adb_path();
 
-    let key = format!("{}:{}", serial, package);
+    // key 只用 serial（不再依赖包名）
+    let key = serial.clone();
 
-    // 检查是否已有监控在运行，同时清理同设备的旧监控
+    // 检查是否已有监控在运行
     {
         let mut handles = state.fps_handles.lock().map_err(|e| e.to_string())?;
         if handles.contains_key(&key) {
             return Err(format!("FPS 监控已在运行: {}", key));
         }
-        // 清理同设备的旧监控（key 以 serial: 开头的）
+        // 清理同设备的旧监控（兼容旧格式 serial:package）
         let old_keys: Vec<String> = handles.keys()
-            .filter(|k| k.starts_with(&format!("{}:", serial)))
+            .filter(|k| **k == serial || k.starts_with(&format!("{}:", serial)))
             .cloned()
             .collect();
         for old_key in old_keys {
             eprintln!("[start_fps_monitor] Cleaning up old monitor: {}", old_key);
             if let Some(h) = handles.remove(&old_key) {
-                h.abort();
-            }
-        }
-        // 也清理只用 serial 作为 key 的旧格式
-        if handles.contains_key(&serial) {
-            eprintln!("[start_fps_monitor] Cleaning up legacy monitor: {}", serial);
-            if let Some(h) = handles.remove(&serial) {
                 h.abort();
             }
         }
@@ -1092,29 +1328,16 @@ pub async fn start_fps_monitor(
     let fps_handles = state.fps_handles.clone();
     let adb_path_clone = adb_path.clone();
     let serial_clone = serial.clone();
-    let package_clone = package.clone();
     let key_clone = key.clone();
 
     let handle = tokio::spawn(async move {
         let adb = AdbCommand::new(&adb_path_clone);
         let start_time = std::time::Instant::now();
 
-        eprintln!("[start_fps_monitor] Starting FPS monitor for {}:{}", serial_clone, package_clone);
+        eprintln!("[start_fps_monitor] Starting FPS monitor for {} (SurfaceFlinger latency mode)", serial_clone);
 
-        // 先做两次 reset，确保清除所有累积帧数据
-        // 第一次 reset：清除之前的累积
-        let _ = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            adb.get_gfxinfo(&serial_clone, &package_clone)
-        ).await;
-        // 等待 1 秒让计数器开始新的周期
-        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
-        // 第二次 reset：丢弃这 1 秒的帧，确保采样从干净状态开始
-        let _ = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            adb.get_gfxinfo(&serial_clone, &package_clone)
-        ).await;
-        eprintln!("[start_fps_monitor] Double reset done, starting clean sampling...");
+        // 记录上一次 latency 的时间戳，用于增量去重
+        let mut last_latency_ts: Vec<u64> = Vec::new();
 
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
@@ -1128,18 +1351,68 @@ pub async fn start_fps_monitor(
                 }
             }
 
-            // 获取 gfxinfo（带 5 秒超时）
-            let gfxinfo_result = tokio::time::timeout(
+            // 获取 SurfaceFlinger latency 数据
+            let latency_result = tokio::time::timeout(
                 std::time::Duration::from_secs(5),
-                adb.get_gfxinfo(&serial_clone, &package_clone)
+                adb.get_surfaceflinger_latency(&serial_clone)
             ).await
             .ok()
             .and_then(|r| r.ok());
 
-            // 解析 FPS
-            let fps = gfxinfo_result
-                .as_ref()
-                .and_then(|info| AdbCommand::parse_fps_from_gfxinfo(info));
+            let fps = if let Some(ref latency_raw) = latency_result {
+                // 提取当前所有有效时间戳（第二列 actual present time）
+                let mut current_ts: Vec<u64> = Vec::new();
+                for line in latency_raw.lines() {
+                    let parts: Vec<&str> = line.split_whitespace().collect();
+                    if parts.len() >= 3 {
+                        if let Ok(t) = parts[1].parse::<u64>() {
+                            if t < 9223372036854775807u64 {
+                                current_ts.push(t);
+                            }
+                        }
+                    }
+                }
+
+                // 增量检测：取比上次最大时间戳更大的帧（时间戳单调递增）
+                let last_max = last_latency_ts.iter().copied().max().unwrap_or(0);
+                let new_frames: Vec<u64> = current_ts.iter()
+                    .filter(|ts| **ts > last_max)
+                    .cloned()
+                    .collect();
+
+                // 更新上次最大时间戳
+                if let Some(&new_max) = current_ts.iter().max() {
+                    last_latency_ts = vec![new_max];
+                }
+
+                if new_frames.len() >= 2 {
+                    // 用增量帧的时间差计算 FPS
+                    let mut total_delta: u64 = 0;
+                    let mut count = 0;
+                    for i in 1..new_frames.len() {
+                        let delta = new_frames[i].saturating_sub(new_frames[i - 1]);
+                        if delta > 0 && delta < 1_000_000_000u64 {
+                            total_delta += delta;
+                            count += 1;
+                        }
+                    }
+                    if count > 0 {
+                        let avg_ns = total_delta as f64 / count as f64;
+                        let fps = 1_000_000_000.0 / avg_ns;
+                        if fps > 0.0 && fps < 500.0 {
+                            Some(fps as f32)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
 
             let elapsed_ms = start_time.elapsed().as_millis() as f64;
 
@@ -1147,25 +1420,10 @@ pub async fn start_fps_monitor(
                 let record = FpsRecord {
                     timestamp: elapsed_ms,
                     fps: fps_val,
-                    foreground_app: package_clone.clone(),
+                    foreground_app: serial_clone.clone(),
                 };
 
-                eprintln!("[start_fps_monitor] FPS: {:.1} at {:.0}ms (app: {})", fps_val, elapsed_ms, package_clone);
-
-                if let Ok(mut data) = fps_data.lock() {
-                    if let Some(records) = data.get_mut(&key_clone) {
-                        records.push(record);
-                        if records.len() > 3600 {
-                            records.drain(..records.len() - 3600);
-                        }
-                    }
-                }
-            } else {
-                let record = FpsRecord {
-                    timestamp: elapsed_ms,
-                    fps: 0.0,
-                    foreground_app: package_clone.clone(),
-                };
+                eprintln!("[start_fps_monitor] FPS: {:.1} at {:.0}ms", fps_val, elapsed_ms);
 
                 if let Ok(mut data) = fps_data.lock() {
                     if let Some(records) = data.get_mut(&key_clone) {
@@ -1176,6 +1434,7 @@ pub async fn start_fps_monitor(
                     }
                 }
             }
+            // 无新帧时不记录（屏幕静止时 SurfaceFlinger 不会产生新帧）
         }
     });
 
@@ -1194,9 +1453,8 @@ pub async fn start_fps_monitor(
 pub async fn stop_fps_monitor(
     state: State<'_, AppState>,
     serial: String,
-    package: String,
 ) -> Result<String, String> {
-    let key = format!("{}:{}", serial, package);
+    let key = serial.clone();
 
     eprintln!("[stop_fps_monitor] Stopping FPS monitor for {}", key);
 
@@ -1223,7 +1481,8 @@ pub async fn get_fps_data(
 
     let mut all_records = Vec::new();
     for (key, records) in data.iter() {
-        if key.starts_with(&format!("{}:", serial)) {
+        // 兼容新旧格式：新格式 key=serial，旧格式 key=serial:package
+        if key == &serial || key.starts_with(&format!("{}:", serial)) {
             all_records.extend(records.clone());
         }
     }
@@ -1240,6 +1499,16 @@ pub async fn get_top_memory_apps(
     state: State<'_, AppState>,
     serial: String,
 ) -> Result<Vec<TopMemoryApp>, String> {
+    // 鸿蒙设备暂不支持 ADB 内存查询
+    let hdc_path = state.get_hdc_path();
+    let hdc = crate::hdc::HdcCommand::new(&hdc_path);
+    if let Ok(devices) = hdc.devices().await {
+        if devices.iter().any(|d| d.serial == serial) {
+            eprintln!("[get_top_memory_apps] HarmonyOS device {}, skipping ADB commands", serial);
+            return Ok(vec![]);
+        }
+    }
+
     let adb_path = state.get_adb_path();
     let adb = AdbCommand::new(&adb_path);
 
@@ -1703,12 +1972,208 @@ pub async fn hdc_get_app_detail(state: State<'_, AppState>, serial: String, pack
         .map_err(|e| e.to_string())
 }
 
-/// HDC 启动应用
+/// 批量获取鸿蒙应用详情（合并为一条 shell 命令执行）
 #[tauri::command]
-pub async fn hdc_start_app(state: State<'_, AppState>, serial: String, package: String) -> Result<String, String> {
+pub async fn hdc_get_apps_details_batch(
+    state: State<'_, AppState>,
+    serial: String,
+    packages: Vec<String>,
+) -> Result<Vec<serde_json::Value>, String> {
     let hdc_path = state.get_hdc_path();
     let hdc = crate::hdc::HdcCommand::new(&hdc_path);
-    hdc.start_app(&serial, &package).await.map_err(|e| e.to_string())
+
+    if packages.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    eprintln!("[hdc_get_apps_details_batch] Batch getting details for {} packages", packages.len());
+
+    // 合并命令：echo MARKER; bm dump -n pkg; echo MARKER; bm dump -n pkg; ...
+    let marker = "___PKG_SEP___";
+    let mut combined_parts: Vec<String> = Vec::new();
+    for pkg in &packages {
+        combined_parts.push(format!("echo '{}{}'", marker, pkg));
+        combined_parts.push(format!("bm dump -n {}", pkg));
+    }
+    let combined_cmd = combined_parts.join("; ");
+
+    // 一次性执行
+    let output = hdc.shell_command(&serial, &combined_cmd).await
+        .map_err(|e| e.to_string())?;
+
+    // 拆分结果：按 marker 分割每个包的 bm dump 输出
+    let mut results: HashMap<String, serde_json::Value> = HashMap::new();
+
+    let mut current_pkg: String = String::new();
+    let mut current_block: Vec<String> = Vec::new();
+
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if let Some(pkg_name) = trimmed.strip_prefix(marker) {
+            // 解析上一个包
+            if !current_pkg.is_empty() {
+                if let Some(info) = parse_hdc_app_detail_from_lines(&current_pkg, &current_block) {
+                    results.insert(current_pkg.clone(), info);
+                }
+            }
+            current_pkg = pkg_name.to_string();
+            current_block.clear();
+        } else if !current_pkg.is_empty() {
+            current_block.push(line.to_string());
+        }
+    }
+    // 最后一个包
+    if !current_pkg.is_empty() {
+        if let Some(info) = parse_hdc_app_detail_from_lines(&current_pkg, &current_block) {
+            results.insert(current_pkg.clone(), info);
+        }
+    }
+
+    // 构建返回列表（保持原始顺序）
+    let mut apps: Vec<serde_json::Value> = Vec::new();
+    for pkg in &packages {
+        if let Some(info) = results.remove(pkg) {
+            apps.push(info);
+        } else {
+            apps.push(serde_json::json!({
+                "package_name": pkg,
+                "app_name": pkg.split('.').last().unwrap_or(pkg),
+                "version_name": "",
+                "version_code": "",
+                "is_system": false,
+            }));
+        }
+    }
+
+    eprintln!("[hdc_get_apps_details_batch] Done: {} packages processed", apps.len());
+    Ok(apps)
+}
+
+/// 从 bm dump 输出行解析鸿蒙应用详情
+fn parse_hdc_app_detail_from_lines(package: &str, lines: &[String]) -> Option<serde_json::Value> {
+    // 合并所有行，提取 JSON 部分
+    let full_output = lines.join("\n");
+
+    let json_str = if let Some(start) = full_output.find('{') {
+        if let Some(end) = full_output.rfind('}') {
+            Some(full_output[start..=end].to_string())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let json_str = json_str?;
+
+    let json_val: serde_json::Value = serde_json::from_str(&json_str).ok()?;
+
+    let app_info = json_val.get("applicationInfo")?;
+
+    let bundle_name = app_info.get("bundleName")
+        .and_then(|v| v.as_str())
+        .unwrap_or(package)
+        .to_string();
+
+    let label_raw = app_info.get("label")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let vendor = app_info.get("organization")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let app_name = if label_raw.starts_with("$string:") || label_raw.starts_with("$") || label_raw.is_empty() {
+        bundle_name.clone()
+    } else {
+        label_raw
+    };
+
+    let version_name = app_info.get("versionName")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let version_code = app_info.get("versionCode")
+        .map(|v| v.to_string())
+        .unwrap_or_default();
+
+    let is_system = app_info.get("isSystemApp")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let removable = app_info.get("removable")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let install_source = app_info.get("installSource")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let code_path = app_info.get("codePath")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let cpu_abi = app_info.get("cpuAbi")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let uid = app_info.get("uid")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+
+    let compile_sdk = app_info.get("compileSdkVersion")
+        .map(|v| v.to_string())
+        .unwrap_or_default();
+
+    let app_distribution_type = app_info.get("appDistributionType")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let install_time = if let Some(ts) = json_val.get("installTime").and_then(|v| v.as_i64()) {
+        chrono::DateTime::from_timestamp_millis(ts)
+            .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+            .unwrap_or_else(|| ts.to_string())
+    } else {
+        String::new()
+    };
+
+    let main_ability = json_val.get("mainAbility")
+        .and_then(|v| v.as_str())
+        .unwrap_or("EntryAbility")
+        .to_string();
+
+    Some(serde_json::json!({
+        "package_name": bundle_name,
+        "app_name": app_name,
+        "version_name": version_name,
+        "version_code": version_code,
+        "vendor": vendor,
+        "is_system": is_system,
+        "removable": removable,
+        "install_source": install_source,
+        "code_path": code_path,
+        "cpu_abi": cpu_abi,
+        "uid": uid,
+        "compile_sdk": compile_sdk,
+        "app_distribution_type": app_distribution_type,
+        "install_time": install_time,
+        "main_ability": main_ability,
+    }))
+}
+
+/// HDC 启动应用
+#[tauri::command]
+pub async fn hdc_start_app(state: State<'_, AppState>, serial: String, package: String, ability: String) -> Result<String, String> {
+    let hdc_path = state.get_hdc_path();
+    let hdc = crate::hdc::HdcCommand::new(&hdc_path);
+    hdc.start_app(&serial, &package, &ability).await.map_err(|e| e.to_string())
 }
 
 /// HDC 停止应用
@@ -1767,6 +2232,190 @@ pub async fn hdc_reboot(state: State<'_, AppState>, serial: String) -> Result<St
     hdc.reboot(&serial).await.map_err(|e| e.to_string())
 }
 
+/// HDC 重启到 recovery 模式
+#[tauri::command]
+pub async fn hdc_reboot_recovery(state: State<'_, AppState>, serial: String) -> Result<String, String> {
+    let hdc_path = state.get_hdc_path();
+    let hdc = crate::hdc::HdcCommand::new(&hdc_path);
+    hdc.reboot_recovery(&serial).await.map_err(|e| e.to_string())
+}
+
+/// HDC 重启到 bootloader 模式
+#[tauri::command]
+pub async fn hdc_reboot_bootloader(state: State<'_, AppState>, serial: String) -> Result<String, String> {
+    let hdc_path = state.get_hdc_path();
+    let hdc = crate::hdc::HdcCommand::new(&hdc_path);
+    hdc.reboot_bootloader(&serial).await.map_err(|e| e.to_string())
+}
+
+/// HDC 关机
+#[tauri::command]
+pub async fn hdc_shutdown(state: State<'_, AppState>, serial: String) -> Result<String, String> {
+    let hdc_path = state.get_hdc_path();
+    let hdc = crate::hdc::HdcCommand::new(&hdc_path);
+    hdc.shutdown(&serial).await.map_err(|e| e.to_string())
+}
+
+/// 导出设备 bugreport（支持 Android 和 HarmonyOS，头部附加设备信息）
+/// 使用 spawn 以支持取消
+#[tauri::command]
+pub async fn export_bugreport(
+    state: State<'_, AppState>,
+    serial: String,
+    output_path: String,
+    device_info: serde_json::Value,
+    platform: String,
+    lang: String,
+) -> Result<String, String> {
+    // spawn 子进程
+    let (cmd_path, args) = match platform.as_str() {
+        "harmonyos" => {
+            let hdc_path = state.get_hdc_path();
+            (hdc_path, vec!["-t".to_string(), serial.clone(), "bugreport".to_string()])
+        }
+        _ => {
+            let adb_path = state.get_adb_path();
+            (adb_path, vec!["-s".to_string(), serial.clone(), "bugreport".to_string()])
+        }
+    };
+
+    let cmd_str = args.join(" ");
+    eprintln!("[bugreport] +{} | {}", chrono::Local::now().format("%H:%M:%S%.3f"), cmd_str);
+    let start = std::time::Instant::now();
+
+    let child = tokio::process::Command::new(&cmd_path)
+        .args(&args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("启动进程失败: {}", e))?;
+
+    // 存储子进程以便取消
+    {
+        let mut guard = BUGREPORT_CHILD.lock().await;
+        // 如果已有进程，先 kill
+        if let Some(mut old) = guard.take() {
+            let _ = old.kill().await;
+        }
+        *guard = Some(child);
+    }
+
+    // 取出子进程并等待完成
+    let output = {
+        let mut guard = BUGREPORT_CHILD.lock().await;
+        let child = guard.take().ok_or("子进程不存在")?;
+        child.wait_with_output().await.map_err(|e| format!("等待进程失败: {}", e))?
+    };
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    eprintln!("[bugreport] -{} | {} {} ({}ms, {} bytes)",
+        chrono::Local::now().format("%H:%M:%S%.3f"),
+        cmd_str,
+        if output.status.success() { "OK" } else { "FAILED" },
+        start.elapsed().as_millis(),
+        stdout.len());
+
+    if !output.status.success() {
+        return Err(format!("bugreport 失败: {}", if stderr.is_empty() { "未知错误" } else { &stderr }));
+    }
+
+    // 写入文件
+    tokio::fs::write(&output_path, &stdout).await
+        .map_err(|e| format!("写入文件失败: {}", e))?;
+
+    // 在文件头部追加设备信息
+    let header = build_bugreport_header(&device_info, &lang);
+    let content = format!("{}\n\n{}", header, stdout);
+    tokio::fs::write(&output_path, content).await
+        .map_err(|e| format!("写入文件失败: {}", e))?;
+
+    Ok(format!("bugreport saved to {}", output_path))
+}
+
+/// 取消正在进行的 bugreport
+#[tauri::command]
+pub async fn cancel_bugreport() -> Result<bool, String> {
+    let mut guard = BUGREPORT_CHILD.lock().await;
+    if let Some(mut child) = guard.take() {
+        eprintln!("[bugreport] 取消 bugreport");
+        let _ = child.kill().await;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+/// 构建设备信息头部（根据语言显示不同标签）
+fn build_bugreport_header(info: &serde_json::Value, lang: &str) -> String {
+    let is_zh = lang.starts_with("zh");
+
+    let title = if is_zh { "设备信息" } else { "Device Information" };
+    let exported = if is_zh { "导出时间" } else { "Exported" };
+    let device_name = if is_zh { "设备名称" } else { "Device Name" };
+    let model = if is_zh { "型号" } else { "Model" };
+    let brand = if is_zh { "品牌" } else { "Brand" };
+    let serial = if is_zh { "序列号" } else { "Serial" };
+    let os_version = if is_zh { "系统版本" } else { "OS Version" };
+    let api_level = if is_zh { "API 级别" } else { "API Level" };
+    let kernel = if is_zh { "内核版本" } else { "Kernel" };
+    let cpu = if is_zh { "处理器" } else { "CPU" };
+    let screen = if is_zh { "屏幕分辨率" } else { "Screen" };
+    let memory = if is_zh { "内存" } else { "Memory" };
+    let storage = if is_zh { "存储" } else { "Storage" };
+    let bugreport_title = if is_zh { "诊断报告" } else { "Bugreport" };
+
+    let mut lines = vec![
+        "========================================".to_string(),
+        format!("  {}", title),
+        format!("  {}: {}", exported, chrono::Local::now().format("%Y-%m-%d %H:%M:%S")),
+        "========================================".to_string(),
+        String::new(),
+    ];
+
+    if let Some(name) = info.get("marketName").and_then(|v| v.as_str()) {
+        lines.push(format!("{}: {}", device_name, name));
+    }
+    if let Some(m) = info.get("model").and_then(|v| v.as_str()) {
+        lines.push(format!("{}: {}", model, m));
+    }
+    if let Some(b) = info.get("brand").and_then(|v| v.as_str()) {
+        lines.push(format!("{}: {}", brand, b));
+    }
+    if let Some(s) = info.get("serial").and_then(|v| v.as_str()) {
+        lines.push(format!("{}: {}", serial, s));
+    }
+    if let Some(v) = info.get("osVersion").and_then(|v| v.as_str()) {
+        lines.push(format!("{}: {}", os_version, v));
+    }
+    if let Some(a) = info.get("apiLevel").and_then(|v| v.as_str()) {
+        lines.push(format!("{}: {}", api_level, a));
+    }
+    if let Some(k) = info.get("kernelVersion").and_then(|v| v.as_str()) {
+        lines.push(format!("{}: {}", kernel, k));
+    }
+    if let Some(c) = info.get("cpuInfo").and_then(|v| v.as_str()) {
+        lines.push(format!("{}: {}", cpu, c));
+    }
+    if let Some(s) = info.get("screenResolution").and_then(|v| v.as_str()) {
+        lines.push(format!("{}: {}", screen, s));
+    }
+    if let Some(m) = info.get("memoryInfo").and_then(|v| v.as_str()) {
+        lines.push(format!("{}: {}", memory, m));
+    }
+    if let Some(s) = info.get("storageInfo").and_then(|v| v.as_str()) {
+        lines.push(format!("{}: {}", storage, s));
+    }
+
+    lines.push(String::new());
+    lines.push("========================================".to_string());
+    lines.push(format!("  {}", bugreport_title));
+    lines.push("========================================".to_string());
+
+    lines.join("\n")
+}
+
 /// 检查 HDC 是否可用
 #[tauri::command]
 pub async fn check_hdc_available(state: State<'_, AppState>) -> Result<bool, String> {
@@ -1790,4 +2439,363 @@ pub async fn get_hdc_path(state: State<'_, AppState>) -> Result<String, String> 
 pub async fn set_hdc_path(state: State<'_, AppState>, path: String) -> Result<(), String> {
     state.set_hdc_path(path);
     Ok(())
+}
+
+// ============ HarmonyOS 性能监控 ============
+
+/// 鸿蒙性能信息
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct HdcPerformanceInfo {
+    pub cpu_usage: f32,
+    pub memory_total: u64,
+    pub memory_used: u64,
+    pub memory_free: u64,
+    pub battery_level: u8,
+    pub battery_status: String,
+    pub storage_total: u64,
+    pub storage_used: u64,
+    pub storage_free: u64,
+}
+
+/// 获取鸿蒙设备性能信息
+#[tauri::command]
+pub async fn hdc_get_performance_info(state: State<'_, AppState>, serial: String) -> Result<HdcPerformanceInfo, String> {
+    let hdc_path = state.get_hdc_path();
+    let hdc = crate::hdc::HdcCommand::new(&hdc_path);
+
+    // 并行获取各项信息
+    let cpu_result = hdc.get_cpu_usage(&serial).await;
+    let mem_result = hdc.get_total_memory(&serial).await;
+    let storage_result = hdc.get_storage_detail(&serial).await;
+    let battery_result = hdc.get_battery_info(&serial).await;
+
+    // 解析 CPU 使用率
+    let cpu_usage = if let Ok(ref cpu_output) = cpu_result {
+        eprintln!("[hdc_perf] cpuusage raw ({} bytes): {:?}", cpu_output.len(), cpu_output);
+        parse_hdc_cpu_usage(cpu_output)
+    } else {
+        eprintln!("[hdc_perf] cpuusage ERROR: {:?}", cpu_result);
+        0.0
+    };
+
+    // 解析内存信息
+    let (memory_total, memory_used, memory_free) = if let Ok(ref mem_output) = mem_result {
+        eprintln!("[hdc_perf] memory raw ({} bytes): {:?}", mem_output.len(), mem_output);
+        parse_hdc_memory(mem_output)
+    } else {
+        eprintln!("[hdc_perf] memory ERROR: {:?}", mem_result);
+        (0, 0, 0)
+    };
+
+    // 解析存储信息
+    let (storage_total, storage_used, storage_free) = if let Ok(ref storage_output) = storage_result {
+        eprintln!("[hdc_perf] storage raw ({} bytes): {:?}", storage_output.len(), storage_output);
+        parse_hdc_storage(storage_output)
+    } else {
+        eprintln!("[hdc_perf] storage ERROR: {:?}", storage_result);
+        (0, 0, 0)
+    };
+
+    // 解析电池信息
+    let (battery_level, battery_status) = if let Ok(ref battery_output) = battery_result {
+        eprintln!("[hdc_perf] battery raw ({} bytes): {:?}", battery_output.len(), battery_output);
+        parse_hdc_battery(battery_output)
+    } else {
+        eprintln!("[hdc_perf] battery ERROR: {:?}", battery_result);
+        (0, String::new())
+    };
+
+    eprintln!("[hdc_perf] result: cpu={}, mem={}/{}/{}, storage={}/{}/{}, battery={}%",
+        cpu_usage, memory_total, memory_used, memory_free,
+        storage_total, storage_used, storage_free, battery_level);
+
+    Ok(HdcPerformanceInfo {
+        cpu_usage,
+        memory_total,
+        memory_used,
+        memory_free,
+        battery_level,
+        battery_status,
+        storage_total,
+        storage_used,
+        storage_free,
+    })
+}
+
+/// 获取鸿蒙设备 CPU 使用率
+#[tauri::command]
+pub async fn hdc_get_cpu_usage(state: State<'_, AppState>, serial: String) -> Result<HdcCpuUsageResult, String> {
+    let hdc_path = state.get_hdc_path();
+    let hdc = crate::hdc::HdcCommand::new(&hdc_path);
+    let output = hdc.get_cpu_usage(&serial).await.map_err(|e| e.to_string())?;
+    let usage = parse_hdc_cpu_usage(&output);
+    Ok(HdcCpuUsageResult { usage, raw: output })
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct HdcCpuUsageResult {
+    pub usage: f32,
+    pub raw: String,
+}
+
+/// 鸿蒙内存信息
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct HdcMemoryInfo {
+    pub total: u64,
+    pub used: u64,
+    pub free: u64,
+    pub raw: String,
+}
+
+/// 获取鸿蒙设备内存信息
+#[tauri::command]
+pub async fn hdc_get_memory_info(state: State<'_, AppState>, serial: String) -> Result<HdcMemoryInfo, String> {
+    let hdc_path = state.get_hdc_path();
+    let hdc = crate::hdc::HdcCommand::new(&hdc_path);
+    let output = hdc.get_total_memory(&serial).await.map_err(|e| e.to_string())?;
+    let (total, used, free) = parse_hdc_memory(&output);
+    Ok(HdcMemoryInfo { total, used, free, raw: output })
+}
+
+/// 鸿蒙电池信息
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct HdcBatteryInfo {
+    pub level: u8,
+    pub status: String,
+    pub temperature: i32,
+    pub voltage: u32,
+    pub current: i32,
+    pub health: String,
+    pub plugged_type: String,
+    pub technology: String,
+    pub remaining_energy: u32,
+    pub total_energy: u32,
+    pub charge_type: String,
+    pub raw: String,
+}
+
+/// 获取鸿蒙设备电池信息
+#[tauri::command]
+pub async fn hdc_get_battery_info(state: State<'_, AppState>, serial: String) -> Result<HdcBatteryInfo, String> {
+    let hdc_path = state.get_hdc_path();
+    let hdc = crate::hdc::HdcCommand::new(&hdc_path);
+    let output = hdc.get_battery_info(&serial).await.map_err(|e| e.to_string())?;
+    Ok(parse_hdc_battery_full(&output))
+}
+
+/// 鸿蒙存储信息
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct HdcStorageInfo {
+    pub total: u64,
+    pub used: u64,
+    pub free: u64,
+    pub raw: String,
+}
+
+/// 获取鸿蒙设备存储信息
+#[tauri::command]
+pub async fn hdc_get_storage_info(state: State<'_, AppState>, serial: String) -> Result<HdcStorageInfo, String> {
+    let hdc_path = state.get_hdc_path();
+    let hdc = crate::hdc::HdcCommand::new(&hdc_path);
+    let output = hdc.get_storage_detail(&serial).await.map_err(|e| e.to_string())?;
+    let (total, used, free) = parse_hdc_storage(&output);
+    Ok(HdcStorageInfo { total, used, free, raw: output })
+}
+
+/// 重启 ADB 服务
+#[tauri::command]
+pub async fn restart_adb_service(state: State<'_, AppState>) -> Result<String, String> {
+    let adb_path = state.get_adb_path();
+    let adb = AdbCommand::new(&adb_path);
+    adb.reset_adb().await.map_err(|e| e.to_string())?;
+    // 重启后刷新设备列表
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+        crate::commands::refresh_devices_after_restart();
+    });
+    Ok("ADB 服务已重启".to_string())
+}
+
+/// 重启 HDC 服务
+#[tauri::command]
+pub async fn restart_hdc_service(state: State<'_, AppState>) -> Result<String, String> {
+    let hdc_path = state.get_hdc_path();
+    let hdc = crate::hdc::HdcCommand::new(&hdc_path);
+    hdc.restart_hdc().await.map_err(|e| e.to_string())?;
+    // 重启后刷新设备列表
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+        crate::commands::refresh_devices_after_restart();
+    });
+    Ok("HDC 服务已重启".to_string())
+}
+
+/// 重启服务后刷新设备列表（内部辅助函数）
+pub fn refresh_devices_after_restart() {
+    // 通过 Tauri event 通知前端刷新
+    // 前端的 pollDevices 会自动处理
+}
+
+/// 获取 hidumper -c base 完整设备基础信息（原始文本）
+#[tauri::command]
+pub async fn hdc_get_base_info(state: State<'_, AppState>, serial: String) -> Result<String, String> {
+    let hdc_path = state.get_hdc_path();
+    let hdc = crate::hdc::HdcCommand::new(&hdc_path);
+
+    // 获取基础信息
+    let base = hdc.get_base_info(&serial).await.map_err(|e| e.to_string())?;
+
+    // 获取 GPU 信息
+    let gpu = hdc.get_gpu_info(&serial).await.unwrap_or_default();
+
+    // 拼接，用特殊标记分隔
+    Ok(format!("{}\n===GPU_INFO===\n{}", base, gpu))
+}
+
+/// 解析 hidumper --cpuusage 输出
+fn parse_hdc_cpu_usage(output: &str) -> f32 {
+    for line in output.lines() {
+        // 格式: "Total: 13.99%; User Space: 8.58%; ..."
+        if line.starts_with("Total:") {
+            if let Some(idx) = line.find(':') {
+                let val = &line[idx + 1..];
+                // 取第一个分号前的内容，去掉 %
+                let val = val.split(';').next().unwrap_or("").trim().trim_end_matches('%');
+                if let Ok(v) = val.parse::<f32>() {
+                    return v;
+                }
+            }
+        }
+    }
+    0.0
+}
+
+/// 解析 /proc/meminfo 输出
+fn parse_hdc_memory(output: &str) -> (u64, u64, u64) {
+    let mut total: u64 = 0;
+    let mut available: u64 = 0;
+
+    for line in output.lines() {
+        if line.starts_with("MemTotal:") {
+            if let Some(val) = parse_meminfo_value(line) {
+                total = val;
+            }
+        } else if line.starts_with("MemAvailable:") {
+            if let Some(val) = parse_meminfo_value(line) {
+                available = val;
+            }
+        }
+    }
+
+    let used = if total > available { total - available } else { 0 };
+    let total_rounded = crate::utils::round_up_memory_gb(total);
+    (total_rounded, used, available)
+}
+
+/// 解析 df -h /data 输出
+fn parse_hdc_storage(output: &str) -> (u64, u64, u64) {
+    // 格式: Filesystem  Size  Used  Avail  Use%  Mounted on
+    //        /dev/root   214G  99G   115G   46%   /data
+    for line in output.lines() {
+        if line.contains("/data") {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 4 {
+                let total = parse_human_size(parts[1]);
+                let used = parse_human_size(parts[2]);
+                let free = parse_human_size(parts[3]);
+                return (total, used, free);
+            }
+        }
+    }
+    (0, 0, 0)
+}
+
+/// 解析 hidumper -s BatteryService -a "-i" 输出
+fn parse_hdc_battery(output: &str) -> (u8, String) {
+    let info = parse_hdc_battery_full(output);
+    (info.level, info.status)
+}
+
+/// 完整解析电池信息
+fn parse_hdc_battery_full(output: &str) -> HdcBatteryInfo {
+    let mut level: u8 = 0;
+    let mut status = String::new();
+    let mut temperature: i32 = 0;
+    let mut voltage: u32 = 0;
+    let mut current: i32 = 0;
+    let mut health = String::new();
+    let mut plugged_type = String::new();
+    let mut technology = String::new();
+    let mut remaining_energy: u32 = 0;
+    let mut total_energy: u32 = 0;
+    let mut charge_type = String::new();
+
+    for line in output.lines() {
+        let line = line.trim();
+        if let Some(val) = line.strip_prefix("capacity:") {
+            if let Ok(v) = val.trim().parse::<u8>() { level = v; }
+        } else if let Some(val) = line.strip_prefix("chargingStatus:") {
+            status = val.trim().to_string();
+        } else if let Some(val) = line.strip_prefix("temperature:") {
+            if let Ok(v) = val.trim().parse::<i32>() { temperature = v; }
+        } else if let Some(val) = line.strip_prefix("voltage:") {
+            if let Ok(v) = val.trim().parse::<u32>() { voltage = v; }
+        } else if let Some(val) = line.strip_prefix("nowCurrent:") {
+            if let Ok(v) = val.trim().parse::<i32>() { current = v; }
+        } else if let Some(val) = line.strip_prefix("healthState:") {
+            health = val.trim().to_string();
+        } else if let Some(val) = line.strip_prefix("pluggedType:") {
+            plugged_type = val.trim().to_string();
+        } else if let Some(val) = line.strip_prefix("technology:") {
+            technology = val.trim().to_string();
+        } else if let Some(val) = line.strip_prefix("remainingEnergy:") {
+            if let Ok(v) = val.trim().parse::<u32>() { remaining_energy = v; }
+        } else if let Some(val) = line.strip_prefix("totalEnergy:") {
+            if let Ok(v) = val.trim().parse::<u32>() { total_energy = v; }
+        } else if let Some(val) = line.strip_prefix("chargeType:") {
+            charge_type = val.trim().to_string();
+        }
+    }
+
+    HdcBatteryInfo {
+        level, status, temperature, voltage, current, health,
+        plugged_type, technology, remaining_energy, total_energy,
+        charge_type, raw: output.to_string(),
+    }
+}
+
+/// 从 "MemTotal:       15803612 kB" 中提取字节数
+fn parse_meminfo_value(line: &str) -> Option<u64> {
+    if let Some(idx) = line.find(':') {
+        let val = &line[idx + 1..];
+        let val = val.trim();
+        // 取数字部分
+        let num_str: String = val.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if let Ok(num) = num_str.parse::<u64>() {
+            // 检查单位
+            if val.contains("MB") || val.contains("mb") {
+                return Some(num * 1024 * 1024);
+            } else if val.contains("GB") || val.contains("gb") {
+                return Some(num * 1024 * 1024 * 1024);
+            } else {
+                // 默认 kB
+                return Some(num * 1024);
+            }
+        }
+    }
+    None
+}
+
+/// 解析人类可读大小 "214G", "99G", "115M" 等为字节数
+fn parse_human_size(s: &str) -> u64 {
+    let s = s.trim();
+    let num_str: String = s.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+    if let Ok(num) = num_str.parse::<f64>() {
+        if s.ends_with('T') { return (num * 1024.0 * 1024.0 * 1024.0 * 1024.0) as u64; }
+        if s.ends_with('G') { return (num * 1024.0 * 1024.0 * 1024.0) as u64; }
+        if s.ends_with('M') { return (num * 1024.0 * 1024.0) as u64; }
+        if s.ends_with('K') { return (num * 1024.0) as u64; }
+        return num as u64;
+    }
+    0
 }

@@ -22,7 +22,7 @@ const InstallPage: React.FC = () => {
     async (path: string) => {
       const platform = devices.find((d) => d.serial === currentDevice)?.platform || "android";
       const validExtensions = platform === "harmonyos"
-        ? [".hap", ".app"]
+        ? [".hap"]
         : [".apk", ".apks", ".xapk", ".apkm"];
       if (!validExtensions.some((ext) => path.endsWith(ext))) {
         return;

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useDeviceStore } from "../store/deviceStore";
 import {
@@ -8,17 +8,45 @@ import {
   reboot,
   rebootRecovery,
   rebootBootloader,
+  hdcGetPerformanceInfo,
+  hdcGetCpuUsage,
+  hdcGetMemoryInfo,
+  hdcGetBatteryInfo,
+  hdcGetStorageInfo,
+  hdcReboot,
+  hdcRebootRecovery,
+  hdcRebootBootloader,
+  hdcShutdown,
 } from "../api/adb";
-import type { PerformanceInfo, TopMemoryApp } from "../types";
+import type { PerformanceInfo, TopMemoryApp, HdcPerformanceInfo, HdcMemoryInfo, HdcBatteryInfo, HdcStorageInfo } from "../types";
 import LoadingSpinner from "../components/LoadingSpinner";
+import PanelRefreshButton from "../components/PanelRefreshButton";
+import RawDataDialog from "../components/RawDataDialog";
 
 const DeviceInfoPage: React.FC = () => {
   const { t } = useTranslation();
-  const { currentDevice, staticInfo, ensureStaticInfo } = useDeviceStore();
+  const { currentDevice, staticInfo, ensureStaticInfo, devices } = useDeviceStore();
 
-  // Each data section has its own state + loading
+  // 判断当前设备平台
+  const currentDeviceData = devices.find((d) => d.serial === currentDevice);
+  const isHarmonyOS = (currentDeviceData as any)?.platform === "harmonyos";
+
+  // Android 性能信息（一次性获取）
   const [perfInfo, setPerfInfo] = useState<PerformanceInfo | null>(null);
   const [perfLoading, setPerfLoading] = useState(false);
+
+  // 鸿蒙独立面板状态
+  const [cpuUsage, setCpuUsage] = useState<number>(0);
+  const [cpuLoading, setCpuLoading] = useState(false);
+  const [cpuRaw, setCpuRaw] = useState<string>("");
+  const [memoryInfo, setMemoryInfo] = useState<HdcMemoryInfo | null>(null);
+  const [memLoading, setMemLoading] = useState(false);
+  const [batteryInfo, setBatteryInfo] = useState<HdcBatteryInfo | null>(null);
+  const [batteryLoading, setBatteryLoading] = useState(false);
+  const [storageInfo, setStorageInfo] = useState<HdcStorageInfo | null>(null);
+  const [storageLoading, setStorageLoading] = useState(false);
+
+  // TOP 内存应用
   const [topMemoryApps, setTopMemoryApps] = useState<TopMemoryApp[]>([]);
   const [topMemLoading, setTopMemLoading] = useState(false);
 
@@ -38,23 +66,108 @@ const DeviceInfoPage: React.FC = () => {
   const [confirmAction, setConfirmAction] = useState<(() => void) | null>(null);
   const [confirmMessage, setConfirmMessage] = useState("");
 
-  const loadPerformance = useCallback(() => {
-    if (!currentDevice) return;
-    setPerfLoading(true);
-    getPerformanceInfo(currentDevice)
-      .then(setPerfInfo)
-      .catch(() => {})
-      .finally(() => setPerfLoading(false));
-  }, [currentDevice]);
+  // Raw data dialog state
+  const [rawDialogOpen, setRawDialogOpen] = useState(false);
+  const [rawDialogTitle, setRawDialogTitle] = useState("");
+  const [rawDialogData, setRawDialogData] = useState("");
 
-  const loadTopMemory = useCallback(() => {
+  // ===== 独立面板刷新函数 =====
+
+  const showRawData = useCallback((title: string, data: string) => {
+    setRawDialogTitle(title);
+    setRawDialogData(data);
+    setRawDialogOpen(true);
+  }, []);
+
+  // CPU 面板刷新
+  const loadCpu = useCallback(() => {
     if (!currentDevice) return;
+    if (isHarmonyOS) {
+      setCpuLoading(true);
+      hdcGetCpuUsage(currentDevice)
+        .then((res) => { setCpuUsage(res.usage); setCpuRaw(res.raw); })
+        .catch(() => {})
+        .finally(() => setCpuLoading(false));
+    } else {
+      setPerfLoading(true);
+      getPerformanceInfo(currentDevice)
+        .then(setPerfInfo)
+        .catch(() => {})
+        .finally(() => setPerfLoading(false));
+    }
+  }, [currentDevice, isHarmonyOS]);
+
+  // 内存面板刷新
+  const loadMemory = useCallback(() => {
+    if (!currentDevice) return;
+    if (isHarmonyOS) {
+      setMemLoading(true);
+      hdcGetMemoryInfo(currentDevice)
+        .then(setMemoryInfo)
+        .catch(() => {})
+        .finally(() => setMemLoading(false));
+    } else {
+      setPerfLoading(true);
+      getPerformanceInfo(currentDevice)
+        .then(setPerfInfo)
+        .catch(() => {})
+        .finally(() => setPerfLoading(false));
+    }
+  }, [currentDevice, isHarmonyOS]);
+
+  // 电池面板刷新
+  const loadBattery = useCallback(() => {
+    if (!currentDevice) return;
+    if (isHarmonyOS) {
+      setBatteryLoading(true);
+      hdcGetBatteryInfo(currentDevice)
+        .then(setBatteryInfo)
+        .catch(() => {})
+        .finally(() => setBatteryLoading(false));
+    } else {
+      setPerfLoading(true);
+      getPerformanceInfo(currentDevice)
+        .then(setPerfInfo)
+        .catch(() => {})
+        .finally(() => setPerfLoading(false));
+    }
+  }, [currentDevice, isHarmonyOS]);
+
+  // 存储面板刷新
+  const loadStorage = useCallback(() => {
+    if (!currentDevice) return;
+    if (isHarmonyOS) {
+      setStorageLoading(true);
+      hdcGetStorageInfo(currentDevice)
+        .then(setStorageInfo)
+        .catch(() => {})
+        .finally(() => setStorageLoading(false));
+    } else {
+      setPerfLoading(true);
+      getPerformanceInfo(currentDevice)
+        .then(setPerfInfo)
+        .catch(() => {})
+        .finally(() => setPerfLoading(false));
+    }
+  }, [currentDevice, isHarmonyOS]);
+
+  // TOP 内存应用刷新（仅 Android）
+  const loadTopMemory = useCallback(() => {
+    if (!currentDevice || isHarmonyOS) return;
     setTopMemLoading(true);
     getTopMemoryApps(currentDevice)
       .then(setTopMemoryApps)
       .catch(() => {})
       .finally(() => setTopMemLoading(false));
-  }, [currentDevice]);
+  }, [currentDevice, isHarmonyOS]);
+
+  // 兼容旧代码：loadPerformance 调用所有独立刷新
+  const loadPerformance = useCallback(() => {
+    loadCpu();
+    loadMemory();
+    loadBattery();
+    loadStorage();
+  }, [loadCpu, loadMemory, loadBattery, loadStorage]);
 
   // Refresh all: 串行加载，每个命令之间留间隔
   const refreshAll = useCallback(async () => {
@@ -63,15 +176,28 @@ const DeviceInfoPage: React.FC = () => {
     const delay = (ms: number) => new Promise(r => setTimeout(r, ms));
 
     // 1. 性能信息（CPU/内存/电池/存储）
-    setPerfLoading(true);
-    try { const info = await getPerformanceInfo(currentDevice); setPerfInfo(info); } catch {}
-    setPerfLoading(false);
+    if (isHarmonyOS) {
+      // 鸿蒙：并行获取所有独立面板数据
+      await Promise.all([
+        loadCpu(),
+        loadMemory(),
+        loadBattery(),
+        loadStorage(),
+      ]);
+    } else {
+      // Android：一次性获取
+      setPerfLoading(true);
+      try { const info = await getPerformanceInfo(currentDevice); setPerfInfo(info); } catch {}
+      setPerfLoading(false);
+    }
     await delay(200);
 
-    // 2. TOP 内存应用
-    setTopMemLoading(true);
-    try { const apps = await getTopMemoryApps(currentDevice); setTopMemoryApps(apps); } catch {}
-    setTopMemLoading(false);
+    // 2. TOP 内存应用（仅 Android）
+    if (!isHarmonyOS) {
+      setTopMemLoading(true);
+      try { const apps = await getTopMemoryApps(currentDevice); setTopMemoryApps(apps); } catch {}
+      setTopMemLoading(false);
+    }
 
     // 3. 静态信息（有缓存则跳过）
     await ensureStaticInfo(currentDevice);
@@ -103,20 +229,20 @@ const DeviceInfoPage: React.FC = () => {
   const handleReboot = useCallback(() => {
     if (!currentDevice) return;
     setConfirmMessage(t("control.confirmReboot"));
-    setConfirmAction(() => () => reboot(currentDevice).catch(() => {}));
-  }, [currentDevice, t]);
+    setConfirmAction(() => () => (isHarmonyOS ? hdcReboot : reboot)(currentDevice).catch(() => {}));
+  }, [currentDevice, t, isHarmonyOS]);
 
   const handleRebootRecovery = useCallback(() => {
     if (!currentDevice) return;
     setConfirmMessage(t("control.confirmReboot"));
-    setConfirmAction(() => () => rebootRecovery(currentDevice).catch(() => {}));
-  }, [currentDevice, t]);
+    setConfirmAction(() => () => (isHarmonyOS ? hdcRebootRecovery : rebootRecovery)(currentDevice).catch(() => {}));
+  }, [currentDevice, t, isHarmonyOS]);
 
   const handleRebootBootloader = useCallback(() => {
     if (!currentDevice) return;
     setConfirmMessage(t("control.confirmReboot"));
-    setConfirmAction(() => () => rebootBootloader(currentDevice).catch(() => {}));
-  }, [currentDevice, t]);
+    setConfirmAction(() => () => (isHarmonyOS ? hdcRebootBootloader : rebootBootloader)(currentDevice).catch(() => {}));
+  }, [currentDevice, t, isHarmonyOS]);
 
   const executeConfirm = useCallback(() => {
     if (confirmAction) {
@@ -134,17 +260,55 @@ const DeviceInfoPage: React.FC = () => {
     );
   }
 
-  const memPercent = perfInfo?.memory_total_bytes && perfInfo.memory_total_bytes > 0
-    ? (perfInfo.memory_used_bytes / perfInfo.memory_total_bytes) * 100
-    : 0;
-  const storagePercent = perfInfo?.storage_total_bytes && perfInfo.storage_total_bytes > 0
-    ? (perfInfo.storage_used_bytes / perfInfo.storage_total_bytes) * 100
-    : 0;
+  // 根据平台计算百分比
+  const memPercent = isHarmonyOS
+    ? (memoryInfo?.total && memoryInfo.total > 0
+        ? (memoryInfo.used / memoryInfo.total) * 100
+        : 0)
+    : (perfInfo?.memory_total_bytes && perfInfo.memory_total_bytes > 0
+        ? (perfInfo.memory_used_bytes / perfInfo.memory_total_bytes) * 100
+        : 0);
+  const storagePercent = isHarmonyOS
+    ? (storageInfo?.total && storageInfo.total > 0
+        ? (storageInfo.used / storageInfo.total) * 100
+        : 0)
+    : (perfInfo?.storage_total_bytes && perfInfo.storage_total_bytes > 0
+        ? (perfInfo.storage_used_bytes / perfInfo.storage_total_bytes) * 100
+        : 0);
 
   // Small inline loading indicator
   const MiniLoader = () => (
     <span className="inline-block w-3 h-3 border border-dark-500 border-t-accent-400 rounded-full animate-spin ml-2" />
   );
+
+  // 格式化字节大小
+  const formatBytes = (bytes: number): string => {
+    if (bytes === 0) return "0 B";
+    const k = 1024;
+    const sizes = ["B", "KB", "MB", "GB", "TB"];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    const val = bytes / Math.pow(k, i);
+    // >= 1000 GB 显示为 TB
+    if (i === 3 && val >= 1000) {
+      return (val / 1000).toFixed(1) + " TB";
+    }
+    return val.toFixed(i >= 2 ? 1 : 0) + " " + sizes[i];
+  };
+
+  // 获取当前平台的性能数据（鸿蒙直接用 state，Android 从 perfInfo 读取）
+  const cpuUsageValue = isHarmonyOS ? cpuUsage : (perfInfo?.cpu_usage ?? 0);
+  const batteryLevel = isHarmonyOS ? batteryInfo?.level : perfInfo?.battery_level;
+  const batteryStatus = isHarmonyOS ? batteryInfo?.status : perfInfo?.battery_status;
+  const memoryUsed = isHarmonyOS ? memoryInfo?.used : perfInfo?.memory_used_bytes;
+  const memoryTotal = isHarmonyOS ? memoryInfo?.total : perfInfo?.memory_total_bytes;
+  const memoryFree = isHarmonyOS ? memoryInfo?.free : perfInfo?.memory_free_bytes;
+  const storageUsed = isHarmonyOS ? storageInfo?.used : perfInfo?.storage_used_bytes;
+  const storageTotal = isHarmonyOS ? storageInfo?.total : perfInfo?.storage_total_bytes;
+  const storageFree = isHarmonyOS ? storageInfo?.free : perfInfo?.storage_free_bytes;
+  const hasCpuData = isHarmonyOS ? cpuUsage > 0 || cpuLoading : !!perfInfo;
+  const hasMemData = isHarmonyOS ? !!memoryInfo : !!perfInfo;
+  const hasBatteryData = isHarmonyOS ? !!batteryInfo : !!perfInfo;
+  const hasStorageData = isHarmonyOS ? !!storageInfo : !!perfInfo;
 
   return (
     <div className="p-6 max-w-4xl mx-auto animate-fade-in">
@@ -221,23 +385,38 @@ const DeviceInfoPage: React.FC = () => {
         {/* Row 1: CPU + Memory */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {/* CPU Gauge */}
-          <div className="bg-dark-800/50 border border-dark-700/50 rounded-xl p-6">
+          <div className="bg-dark-800/50 border border-dark-700/50 rounded-xl p-6 relative group">
+            <PanelRefreshButton onRefresh={loadCpu} loading={isHarmonyOS ? cpuLoading : perfLoading} />
+            <button
+              className="hidden group-hover:flex absolute -top-1 right-5 z-10 w-6 h-6 items-center justify-center
+                         bg-dark-700 hover:bg-dark-600 border border-dark-600 rounded-full
+                         text-dark-400 hover:text-dark-200 transition-colors"
+              onClick={() => showRawData(t("monitor.cpuUsage"), cpuRaw || JSON.stringify(perfInfo, null, 2))}
+              title={t("common.viewRawData")}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                <polyline points="14 2 14 8 20 8" />
+                <line x1="16" y1="13" x2="8" y2="13" />
+                <line x1="16" y1="17" x2="8" y2="17" />
+              </svg>
+            </button>
             <h3 className="text-sm font-semibold text-dark-300 mb-4 flex items-center">
               {t("monitor.cpuUsage")}
-              {perfLoading && <MiniLoader />}
+              {(isHarmonyOS ? cpuLoading : perfLoading) && <MiniLoader />}
             </h3>
-            {perfInfo ? (
+            {(hasCpuData || cpuUsageValue > 0) ? (
               <div className="flex items-center justify-center">
                 <div className="relative w-40 h-40">
                   <svg className="w-full h-full -rotate-90" viewBox="0 0 120 120">
                     <circle cx="60" cy="60" r="50" fill="none" stroke="#334155" strokeWidth="10" />
                     <circle cx="60" cy="60" r="50" fill="none" stroke="#3b82f6" strokeWidth="10"
                       strokeLinecap="round"
-                      strokeDasharray={`${(perfInfo.cpu_usage / 100) * 314} 314`}
+                      strokeDasharray={`${(cpuUsageValue / 100) * 314} 314`}
                       className="transition-all duration-1000 ease-out" />
                   </svg>
                   <div className="absolute inset-0 flex flex-col items-center justify-center">
-                    <span className="text-3xl font-bold text-dark-100">{Math.round(perfInfo.cpu_usage)}</span>
+                    <span className="text-3xl font-bold text-dark-100">{Math.round(cpuUsageValue)}</span>
                     <span className="text-xs text-dark-400">%</span>
                   </div>
                 </div>
@@ -250,17 +429,32 @@ const DeviceInfoPage: React.FC = () => {
           </div>
 
           {/* Memory */}
-          <div className="bg-dark-800/50 border border-dark-700/50 rounded-xl p-6">
+          <div className="bg-dark-800/50 border border-dark-700/50 rounded-xl p-6 relative group">
+            <PanelRefreshButton onRefresh={loadMemory} loading={isHarmonyOS ? memLoading : perfLoading} />
+            <button
+              className="hidden group-hover:flex absolute -top-1 right-5 z-10 w-6 h-6 items-center justify-center
+                         bg-dark-700 hover:bg-dark-600 border border-dark-600 rounded-full
+                         text-dark-400 hover:text-dark-200 transition-colors"
+              onClick={() => showRawData(t("monitor.memoryUsage"), memoryInfo?.raw || JSON.stringify(perfInfo, null, 2))}
+              title={t("common.viewRawData")}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                <polyline points="14 2 14 8 20 8" />
+                <line x1="16" y1="13" x2="8" y2="13" />
+                <line x1="16" y1="17" x2="8" y2="17" />
+              </svg>
+            </button>
             <h3 className="text-sm font-semibold text-dark-300 mb-4 flex items-center">
               {t("monitor.memoryUsage")}
-              {perfLoading && <MiniLoader />}
+              {(isHarmonyOS ? memLoading : perfLoading) && <MiniLoader />}
             </h3>
-            {perfInfo ? (
+            {hasMemData && memoryTotal ? (
               <div className="space-y-4">
                 <div>
                   <div className="flex justify-between mb-1.5">
                     <span className="text-xs text-dark-400">{t("monitor.ram")}</span>
-                    <span className="text-xs text-dark-300">{perfInfo.memory_used} / {perfInfo.memory_total}</span>
+                    <span className="text-xs text-dark-300">{formatBytes(memoryUsed || 0)} / {formatBytes(memoryTotal)}</span>
                   </div>
                   <div className="w-full h-3 bg-dark-700 rounded-full overflow-hidden">
                     <div className="h-full bg-gradient-to-r from-accent-500 to-accent-400 rounded-full transition-all duration-1000"
@@ -270,11 +464,11 @@ const DeviceInfoPage: React.FC = () => {
                 <div className="grid grid-cols-2 gap-3">
                   <div className="bg-dark-700/30 rounded-lg p-3 text-center">
                     <span className="text-xs text-dark-500">{t("monitor.used")}</span>
-                    <p className="text-sm text-dark-200 font-medium mt-1">{perfInfo.memory_used}</p>
+                    <p className="text-sm text-dark-200 font-medium mt-1">{formatBytes(memoryUsed || 0)}</p>
                   </div>
                   <div className="bg-dark-700/30 rounded-lg p-3 text-center">
                     <span className="text-xs text-dark-500">{t("monitor.free")}</span>
-                    <p className="text-sm text-dark-200 font-medium mt-1">{perfInfo.memory_free}</p>
+                    <p className="text-sm text-dark-200 font-medium mt-1">{formatBytes(memoryFree || 0)}</p>
                   </div>
                 </div>
               </div>
@@ -286,34 +480,78 @@ const DeviceInfoPage: React.FC = () => {
           </div>
 
           {/* Battery */}
-          <div className="bg-dark-800/50 border border-dark-700/50 rounded-xl p-6">
+          <div className="bg-dark-800/50 border border-dark-700/50 rounded-xl p-6 relative group">
+            <PanelRefreshButton onRefresh={loadBattery} loading={isHarmonyOS ? batteryLoading : perfLoading} />
+            <button
+              className="hidden group-hover:flex absolute -top-1 right-5 z-10 w-6 h-6 items-center justify-center
+                         bg-dark-700 hover:bg-dark-600 border border-dark-600 rounded-full
+                         text-dark-400 hover:text-dark-200 transition-colors"
+              onClick={() => showRawData(t("monitor.batteryStatus"), batteryInfo?.raw || JSON.stringify(perfInfo, null, 2))}
+              title={t("common.viewRawData")}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                <polyline points="14 2 14 8 20 8" />
+                <line x1="16" y1="13" x2="8" y2="13" />
+                <line x1="16" y1="17" x2="8" y2="17" />
+              </svg>
+            </button>
             <h3 className="text-sm font-semibold text-dark-300 mb-4 flex items-center">
               {t("monitor.batteryStatus")}
-              {perfLoading && <MiniLoader />}
+              {(isHarmonyOS ? batteryLoading : perfLoading) && <MiniLoader />}
             </h3>
-            {perfInfo ? (
+            {hasBatteryData && batteryLevel !== undefined ? (
               <div className="flex items-center gap-6">
                 <div className="relative">
-                  <div className={`w-20 h-32 rounded-xl border-2 flex items-end justify-center pb-2 transition-colors ${perfInfo.battery_level > 20 ? "border-green-500/50" : "border-red-500/50"}`}>
-                    <div className={`w-14 rounded-md transition-all duration-1000 ${perfInfo.battery_level > 20 ? "bg-green-500/30" : "bg-red-500/30"}`}
-                      style={{ height: `${(perfInfo.battery_level / 100) * 100}%` }} />
+                  <div className={`w-20 h-32 rounded-xl border-2 flex items-end justify-center pb-2 transition-colors ${batteryLevel > 20 ? "border-green-500/50" : "border-red-500/50"}`}>
+                    <div className={`w-14 rounded-md transition-all duration-1000 ${batteryLevel > 20 ? "bg-green-500/30" : "bg-red-500/30"}`}
+                      style={{ height: `${(batteryLevel / 100) * 100}%` }} />
                   </div>
                   <div className="absolute -right-1.5 top-6 w-2 h-4 bg-dark-600 rounded-r" />
                 </div>
                 <div className="flex-1 space-y-3">
                   <div className="flex items-center gap-2">
-                    <span className="text-3xl font-bold text-dark-100">{perfInfo.battery_level}</span>
+                    <span className="text-3xl font-bold text-dark-100">{batteryLevel}</span>
                     <span className="text-sm text-dark-400">%</span>
                   </div>
                   <div className="space-y-1.5">
                     <div className="flex justify-between">
                       <span className="text-xs text-dark-500">{t("monitor.status")}</span>
-                      <span className="text-xs text-dark-300">{perfInfo.battery_status}</span>
+                      <span className="text-xs text-dark-300">{batteryStatus || "-"}</span>
                     </div>
-                    <div className="flex justify-between">
-                      <span className="text-xs text-dark-500">{t("monitor.temperature")}</span>
-                      <span className="text-xs text-dark-300">{perfInfo.battery_temperature}</span>
-                    </div>
+                    {isHarmonyOS && batteryInfo ? (
+                      <>
+                        <div className="flex justify-between">
+                          <span className="text-xs text-dark-500">{t("monitor.temperature")}</span>
+                          <span className="text-xs text-dark-300">{(batteryInfo.temperature / 10).toFixed(1)}°C</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-xs text-dark-500">电压</span>
+                          <span className="text-xs text-dark-300">{(batteryInfo.voltage / 1000000).toFixed(2)}V</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-xs text-dark-500">电流</span>
+                          <span className="text-xs text-dark-300">{batteryInfo.current}mA</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-xs text-dark-500">健康状态</span>
+                          <span className="text-xs text-dark-300">{batteryInfo.health === "1" ? "良好" : batteryInfo.health}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-xs text-dark-500">充电方式</span>
+                          <span className="text-xs text-dark-300">{batteryInfo.plugged_type === "1" ? "AC" : batteryInfo.plugged_type === "2" ? "USB" : batteryInfo.plugged_type}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-xs text-dark-500">电池技术</span>
+                          <span className="text-xs text-dark-300">{batteryInfo.technology}</span>
+                        </div>
+                      </>
+                    ) : !isHarmonyOS && (
+                      <div className="flex justify-between">
+                        <span className="text-xs text-dark-500">{t("monitor.temperature")}</span>
+                        <span className="text-xs text-dark-300">{perfInfo?.battery_temperature || "-"}</span>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -325,17 +563,32 @@ const DeviceInfoPage: React.FC = () => {
           </div>
 
           {/* Storage */}
-          <div className="bg-dark-800/50 border border-dark-700/50 rounded-xl p-6">
+          <div className="bg-dark-800/50 border border-dark-700/50 rounded-xl p-6 relative group">
+            <PanelRefreshButton onRefresh={loadStorage} loading={isHarmonyOS ? storageLoading : perfLoading} />
+            <button
+              className="hidden group-hover:flex absolute -top-1 right-5 z-10 w-6 h-6 items-center justify-center
+                         bg-dark-700 hover:bg-dark-600 border border-dark-600 rounded-full
+                         text-dark-400 hover:text-dark-200 transition-colors"
+              onClick={() => showRawData(t("monitor.storageSpace"), storageInfo?.raw || JSON.stringify(perfInfo, null, 2))}
+              title={t("common.viewRawData")}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                <polyline points="14 2 14 8 20 8" />
+                <line x1="16" y1="13" x2="8" y2="13" />
+                <line x1="16" y1="17" x2="8" y2="17" />
+              </svg>
+            </button>
             <h3 className="text-sm font-semibold text-dark-300 mb-4 flex items-center">
               {t("monitor.storageSpace")}
-              {perfLoading && <MiniLoader />}
+              {(isHarmonyOS ? storageLoading : perfLoading) && <MiniLoader />}
             </h3>
-            {perfInfo ? (
+            {hasStorageData && storageTotal ? (
               <div className="space-y-4">
                 <div>
                   <div className="flex justify-between mb-1.5">
                     <span className="text-xs text-dark-400">{t("monitor.rom")}</span>
-                    <span className="text-xs text-dark-300">{perfInfo.storage_used} / {perfInfo.storage_total}</span>
+                    <span className="text-xs text-dark-300">{formatBytes(storageUsed || 0)} / {formatBytes(storageTotal)}</span>
                   </div>
                   <div className="w-full h-3 bg-dark-700 rounded-full overflow-hidden">
                     <div className="h-full bg-gradient-to-r from-purple-500 to-purple-400 rounded-full transition-all duration-1000"
@@ -345,15 +598,15 @@ const DeviceInfoPage: React.FC = () => {
                 <div className="grid grid-cols-3 gap-3">
                   <div className="bg-dark-700/30 rounded-lg p-3 text-center">
                     <span className="text-xs text-dark-500">{t("monitor.used")}</span>
-                    <p className="text-sm text-dark-200 font-medium mt-1">{perfInfo.storage_used}</p>
+                    <p className="text-sm text-dark-200 font-medium mt-1">{formatBytes(storageUsed || 0)}</p>
                   </div>
                   <div className="bg-dark-700/30 rounded-lg p-3 text-center">
                     <span className="text-xs text-dark-500">{t("monitor.free")}</span>
-                    <p className="text-sm text-dark-200 font-medium mt-1">{perfInfo.storage_free}</p>
+                    <p className="text-sm text-dark-200 font-medium mt-1">{formatBytes(storageFree || 0)}</p>
                   </div>
                   <div className="bg-dark-700/30 rounded-lg p-3 text-center">
                     <span className="text-xs text-dark-500">{t("monitor.total")}</span>
-                    <p className="text-sm text-dark-200 font-medium mt-1">{perfInfo.storage_total}</p>
+                    <p className="text-sm text-dark-200 font-medium mt-1">{formatBytes(storageTotal)}</p>
                   </div>
                 </div>
               </div>
@@ -375,35 +628,38 @@ const DeviceInfoPage: React.FC = () => {
             <p className="text-dark-100 font-mono text-sm">{cachedInfo?.cpuArch || "-"}</p>
           </div>
 
-          {/* Top Memory Apps */}
-          <div className="bg-dark-800/50 border border-dark-700/50 rounded-xl p-6">
-            <h3 className="text-sm font-semibold text-dark-300 mb-4 flex items-center">
-              {t("deviceInfo.topMemoryApps")}
-              {topMemLoading && <MiniLoader />}
-            </h3>
-            {topMemoryApps.length > 0 ? (
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-dark-700/50">
-                    <th className="text-left py-2 text-dark-400 font-medium">#</th>
-                    <th className="text-left py-2 text-dark-400 font-medium">Package</th>
-                    <th className="text-right py-2 text-dark-400 font-medium">Memory</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {topMemoryApps.map((app, idx) => (
-                    <tr key={app.package_name} className="border-b border-dark-700/30">
-                      <td className="py-2 text-dark-500">{idx + 1}</td>
-                      <td className="py-2 text-dark-200 font-mono truncate max-w-[200px]">{app.package_name}</td>
-                      <td className="py-2 text-dark-200 text-right">{app.memory_used}</td>
+          {/* Top Memory Apps (仅 Android) */}
+          {!isHarmonyOS && (
+            <div className="bg-dark-800/50 border border-dark-700/50 rounded-xl p-6 relative group">
+              <PanelRefreshButton onRefresh={loadTopMemory} loading={topMemLoading} />
+              <h3 className="text-sm font-semibold text-dark-300 mb-4 flex items-center">
+                {t("deviceInfo.topMemoryApps")}
+                {topMemLoading && <MiniLoader />}
+              </h3>
+              {topMemoryApps.length > 0 ? (
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-dark-700/50">
+                      <th className="text-left py-2 text-dark-400 font-medium">#</th>
+                      <th className="text-left py-2 text-dark-400 font-medium">Package</th>
+                      <th className="text-right py-2 text-dark-400 font-medium">Memory</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            ) : (
-              <p className="text-dark-500 text-sm">{topMemLoading ? "" : "-"}</p>
-            )}
-          </div>
+                  </thead>
+                  <tbody>
+                    {topMemoryApps.map((app, idx) => (
+                      <tr key={app.package_name} className="border-b border-dark-700/30">
+                        <td className="py-2 text-dark-500">{idx + 1}</td>
+                        <td className="py-2 text-dark-200 font-mono truncate max-w-[200px]">{app.package_name}</td>
+                        <td className="py-2 text-dark-200 text-right">{app.memory_used}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <p className="text-dark-500 text-sm">{topMemLoading ? "" : "-"}</p>
+              )}
+            </div>
+          )}
 
           {/* Reboot */}
           <div className="bg-dark-800/50 border border-dark-700/50 rounded-xl p-6">
@@ -425,6 +681,13 @@ const DeviceInfoPage: React.FC = () => {
           </div>
         </div>
       </div>
+
+      <RawDataDialog
+        open={rawDialogOpen}
+        onClose={() => setRawDialogOpen(false)}
+        title={rawDialogTitle}
+        data={rawDialogData}
+      />
     </div>
   );
 };

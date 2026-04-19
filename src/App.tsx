@@ -12,6 +12,7 @@ const DeviceInfoPage = lazy(() => import("./pages/DeviceInfoPage"));
 const DeviceControlPage = lazy(() => import("./pages/DeviceControlPage"));
 const FpsMonitorPage = lazy(() => import("./pages/FpsMonitorPage"));
 const TerminalPage = lazy(() => import("./pages/TerminalPage"));
+const AutomationPage = lazy(() => import("./pages/AutomationPage"));
 const SettingsPage = lazy(() => import("./pages/SettingsPage"));
 
 const App: React.FC = () => {
@@ -35,6 +36,7 @@ const App: React.FC = () => {
             <Route path="/control" element={<DeviceControlPage />} />
             <Route path="/fps" element={<FpsMonitorPage />} />
             <Route path="/terminal" element={<TerminalPage />} />
+            <Route path="/automation" element={<AutomationPage />} />
             <Route path="/settings" element={<SettingsPage />} />
           </Route>
         </Routes>
