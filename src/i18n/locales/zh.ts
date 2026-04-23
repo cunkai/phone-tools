@@ -1,6 +1,6 @@
 const zh = {
   app: {
-    title: "手机管理器",
+    title: "手机管理器（支持原生鸿蒙系统）",
   },
   nav: {
     home: "首页",
@@ -438,6 +438,8 @@ const zh = {
     variableNamePlaceholder: "变量名",
     x: "X",
     y: "Y",
+    from: "从",
+    to: "到",
     fromX: "起点X",
     fromY: "起点Y",
     toX: "终点X",

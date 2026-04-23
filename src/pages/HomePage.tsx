@@ -599,35 +599,53 @@ const HomePage: React.FC = () => {
           <div className="grid grid-cols-3 gap-3">
             <button
               onClick={async () => {
-                if (!currentDevice) return;
-                try {
-                  const safeName = (marketName || device?.model || currentDevice).replace(/[\\/:*?"<>|]/g, "_");
-                  const result = await save({
-                    defaultPath: `bugreport_${safeName}_${new Date().toISOString().slice(0, 10)}.txt`,
-                    filters: [{ name: "Text", extensions: ["txt"] }],
-                  });
-                  if (!result) return;
-                  const deviceInfo: Record<string, string> = {
-                    marketName,
-                    model: device?.model || "",
-                    brand: device?.brand || "",
-                    serial: currentDevice,
-                    osVersion,
-                    apiLevel: sdkVersion,
-                    kernelVersion,
-                    cpuInfo,
-                    screenResolution: screenRes,
-                    memoryInfo: totalMemory,
-                    storageInfo: `${totalStorage} (avail: ${availStorage})`,
-                  };
-                  setExporting(true);
-                  await exportBugreport(currentDevice, result, deviceInfo, currentPlatform, i18n.language);
-                } catch (e: any) {
-                  console.error("bugreport failed:", e);
-                } finally {
-                  setExporting(false);
-                }
-              }}
+        if (!currentDevice) return;
+        try {
+          const safeName = (marketName || device?.model || currentDevice).replace(/[\\/:*?"<>|]/g, "_");
+          const result = await save({
+            defaultPath: `bugreport_${safeName}_${new Date().toISOString().slice(0, 10)}.txt`,
+            filters: [{ name: "Text", extensions: ["txt"] }],
+          });
+          if (!result) return;
+          
+          // 构建完整的设备信息对象，包含所有主页显示的参数
+          const deviceInfo: Record<string, any> = {
+            marketName,
+            model: device?.model || "",
+            brand: device?.brand || "",
+            serial: currentDevice,
+            osVersion,
+            apiLevel: sdkVersion,
+            kernelVersion,
+            cpuInfo,
+            screenResolution: screenRes,
+            memoryInfo: totalMemory,
+            storageInfo: `${totalStorage} (avail: ${availStorage})`,
+            securityPatch,
+            abiList,
+            maxRefreshRate,
+          };
+          
+          // 如果有 baseInfo，解析出更多参数添加到 deviceInfo
+          if (baseInfo) {
+            const parsedItems = parseBaseInfo(baseInfo, screenRes, maxRefreshRate || 0, currentDevice, (key: string, fallback: string) => fallback);
+            for (const item of parsedItems) {
+              // 将解析出的键值对转换为驼峰命名并添加到 deviceInfo
+              const key = item.key.replace(/\s+/g, '').replace(/[^\w]/g, '');
+              if (!deviceInfo[key] && item.value && item.value !== "-") {
+                deviceInfo[key] = item.value;
+              }
+            }
+          }
+          
+          setExporting(true);
+          await exportBugreport(currentDevice, result, deviceInfo, currentPlatform, i18n.language);
+        } catch (e: any) {
+          console.error("bugreport failed:", e);
+        } finally {
+          setExporting(false);
+        }
+      }}
               disabled={exporting}
               className="flex flex-col items-center gap-2 p-4 bg-dark-800/50 border border-dark-700/50 rounded-xl hover:bg-dark-800 transition-colors disabled:opacity-50"
               title={t("tools.exportBugreport")}

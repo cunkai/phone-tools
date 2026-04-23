@@ -32,7 +32,17 @@ const Layout: React.FC = () => {
       <DeviceNotification />
       <div className="flex flex-col flex-1 min-w-0">
         <header className="flex items-center justify-between px-4 h-12 bg-dark-900/80 border-b border-dark-700/50 backdrop-blur-sm flex-shrink-0">
-          <h1 className="text-sm font-semibold text-dark-200">{t("app.title")}</h1>
+          <div className="flex items-center gap-3">
+            <h1 className="text-sm font-semibold text-dark-200">{t("app.title")}</h1>
+            <a 
+              href="https://forum.trae.cn/t/topic/11969" 
+              target="_blank" 
+              rel="noopener noreferrer"
+              className="text-xs text-accent-400 hover:underline transition-colors"
+            >
+              项目介绍
+            </a>
+          </div>
           <DeviceSelector />
         </header>
         <main className="flex-1 overflow-auto">

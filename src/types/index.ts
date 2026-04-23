@@ -51,12 +51,13 @@ export interface InstalledApp {
 }
 
 export interface FileInfo {
-  name: string;
-  path: string;
-  is_directory: boolean;
-  size: string;
-  permissions: string;
-  last_modified: string;
+    name: string;
+    path: string;
+    is_directory: boolean;
+    size: string;
+    permissions: string;
+    last_modified: string;
+    full_info: string;
 }
 
 export interface PerformanceInfo {

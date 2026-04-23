@@ -11,7 +11,7 @@ const AppsPage = lazy(() => import("./pages/AppsPage"));
 const ToolsPage = lazy(() => import("./pages/ToolsPage"));
 const DeviceInfoPage = lazy(() => import("./pages/DeviceInfoPage"));
 const DeviceControlPage = lazy(() => import("./pages/DeviceControlPage"));
-const FpsMonitorPage = lazy(() => import("./pages/FpsMonitorPage"));
+// const FpsMonitorPage = lazy(() => import("./pages/FpsMonitorPage")); // 暂时屏蔽，功能不够完整
 const TerminalPage = lazy(() => import("./pages/TerminalPage"));
 const AutomationPage = lazy(() => import("./pages/AutomationPage"));
 const SettingsPage = lazy(() => import("./pages/SettingsPage"));
@@ -46,7 +46,7 @@ const App: React.FC = () => {
               <Route path="/tools" element={<ToolsPage />} />
               <Route path="/monitor" element={<DeviceInfoPage />} />
               <Route path="/control" element={<DeviceControlPage />} />
-              <Route path="/fps" element={<FpsMonitorPage />} />
+              {/* <Route path="/fps" element={<FpsMonitorPage />} /> */} {/* 暂时屏蔽，功能不够完整 */}
               <Route path="/terminal" element={<TerminalPage />} />
               <Route path="/automation" element={<AutomationPage />} />
               <Route path="/settings" element={<SettingsPage />} />

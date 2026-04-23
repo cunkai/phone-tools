@@ -384,59 +384,43 @@ pub async fn get_app_details(
         uid: 0,
     };
 
-    // 获取应用名称
-    let label_cmd = format!("dumpsys package {} | grep -m1 'Application Label:'", package);
-    if let Ok(label_output) = adb.shell_command(&serial, &label_cmd).await {
-        let trimmed = label_output.trim();
-        eprintln!("[get_app_details] Label raw output: '{}'", trimmed);
-        if let Some(label) = trimmed.split("Application Label:").nth(1) {
-            let name = label.trim().to_string();
-            if !name.is_empty() {
-                app_info.app_name = name;
-                eprintln!("[get_app_details] Parsed label: '{}'", app_info.app_name);
-            }
-        }
-    }
+    // 使用单个命令获取所有信息，避免多次调用
+    let cmd = format!("dumpsys package {} ", package);
 
-    // 获取版本等信息
-    let ver_cmd = format!("dumpsys package {} | grep -E 'versionName=|versionCode=|firstInstallTime=|userId='", package);
-    if let Ok(ver_output) = adb.shell_command(&serial, &ver_cmd).await {
-        for line in ver_output.lines() {
-            if line.contains("versionName=") {
-                if let Some(v) = line.split("versionName=").nth(1) {
-                    app_info.version_name = v.split_whitespace().next().unwrap_or("").to_string();
+    if let Ok(output) = adb.shell_command(&serial, &cmd).await {
+        let lines: Vec<&str> = output.lines().collect();
+        // 解析 dumpsys 输出
+        for line in lines.iter() {
+            let trimmed = line.trim();
+            if let Some(label) = trimmed.split("Application Label:").nth(1) {
+                let name = label.trim().to_string();
+                if !name.is_empty() {
+                    app_info.app_name = name;
+                    eprintln!("[get_app_details] Parsed label: '{}'", app_info.app_name);
                 }
             }
-            if line.contains("versionCode=") {
-                if let Some(v) = line.split("versionCode=").nth(1) {
-                    app_info.version_code = v.split_whitespace().next().unwrap_or("").to_string();
+            if let Some(v) = trimmed.split("versionName=").nth(1) {
+                app_info.version_name = v.split_whitespace().next().unwrap_or("").to_string();
+            }
+            if let Some(v) = trimmed.split("versionCode=").nth(1) {
+                app_info.version_code = v.split_whitespace().next().unwrap_or("").to_string();
+            }
+            if let Some(t) = trimmed.split("firstInstallTime=").nth(1) {
+                app_info.install_time = t.trim().to_string();
+            }
+            if let Some(v) = trimmed.split("userId=").nth(1) {
+                if let Ok(uid) = v.trim().parse::<u32>() {
+                    app_info.uid = uid;
                 }
             }
-            if line.contains("firstInstallTime=") {
-                if let Some(t) = line.split('=').nth(1) {
-                    app_info.install_time = t.trim().to_string();
-                }
-            }
-            if line.contains("userId=") {
-                if let Some(v) = line.split("userId=").nth(1) {
-                    if let Ok(uid) = v.trim().parse::<u32>() {
-                        app_info.uid = uid;
+            // 解析 du 的输出（以数字开头的行
+            if !trimmed.is_empty() && trimmed.chars().next().unwrap_or(' ').is_ascii_digit() {
+                let parts: Vec<&str> = trimmed.split_whitespace().collect();
+                if !parts.is_empty() {
+                    if let Ok(kb) = parts[0].parse::<u64>() {
+                        app_info.app_size = crate::utils::format_file_size(kb * 1024);
                     }
                 }
-            }
-        }
-    }
-
-    // 获取应用大小
-    let size_cmd = format!("du -s /data/data/{} 2>/dev/null || du -s /data/user/0/{} 2>/dev/null", package, package);
-    if let Ok(size_output) = adb.shell_command(&serial, &size_cmd).await {
-        for line in size_output.lines() {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if !parts.is_empty() {
-                if let Ok(kb) = parts[0].parse::<u64>() {
-                    app_info.app_size = crate::utils::format_file_size(kb * 1024);
-                }
-                break;
             }
         }
     }
@@ -876,7 +860,35 @@ pub async fn start_logcat_stream(
         }
     }
 
-    // Android 设备暂不支持实时日志流
+    // Android 设备使用 adb logcat
+    let adb_path = state.get_adb_path();
+    let adb = AdbCommand::new(&adb_path);
+    let child = adb.start_logcat_stream(&serial).await.map_err(|e| e.to_string())?;
+    
+    // 存储子进程
+    let mut logcat_child = LOGCAT_CHILD.lock().await;
+    *logcat_child = Some(child);
+    drop(logcat_child);
+
+    // 读取日志流
+    tokio::spawn(async move {
+        let child = {
+            let mut logcat_child = LOGCAT_CHILD.lock().await;
+            logcat_child.take()
+        };
+
+        if let Some(mut child) = child {
+            let stdout = child.stdout.take().unwrap();
+            let reader = tokio::io::BufReader::new(stdout);
+            let mut lines = tokio::io::AsyncBufReadExt::lines(reader);
+
+            while let Ok(Some(line)) = lines.next_line().await {
+                // 发送日志事件
+                let _ = app.emit("log-output", crate::events::LogOutput { line });
+            }
+        }
+    });
+
     Ok(())
 }
 
@@ -2388,69 +2400,134 @@ pub async fn export_bugreport(
     platform: String,
     lang: String,
 ) -> Result<String, String> {
-    // spawn 子进程
-    let (cmd_path, args) = match platform.as_str() {
-        "harmonyos" => {
-            let hdc_path = state.get_hdc_path();
-            (hdc_path, vec!["-t".to_string(), serial.clone(), "bugreport".to_string()])
-        }
-        _ => {
-            let adb_path = state.get_adb_path();
-            (adb_path, vec!["-s".to_string(), serial.clone(), "bugreport".to_string()])
-        }
-    };
-
-    let cmd_str = args.join(" ");
-    eprintln!("[bugreport] +{} | {}", chrono::Local::now().format("%H:%M:%S%.3f"), cmd_str);
     let start = std::time::Instant::now();
-
-    let child = tokio::process::Command::new(&cmd_path)
-        .args(&args)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("启动进程失败: {}", e))?;
-
-    // 存储子进程以便取消
+    
+    // 设置一个占位符，表示导出正在进行中
     {
         let mut guard = BUGREPORT_CHILD.lock().await;
         // 如果已有进程，先 kill
         if let Some(mut old) = guard.take() {
             let _ = old.kill().await;
         }
-        *guard = Some(child);
+        // 设置一个占位符进程（使用 sleep 命令）
+        let placeholder = tokio::process::Command::new("sleep")
+            .arg("3600") // 1小时，足够长的时间
+            .spawn()
+            .map_err(|e| format!("启动占位进程失败: {}", e))?;
+        *guard = Some(placeholder);
     }
-
-    // 取出子进程并等待完成
-    let output = {
-        let mut guard = BUGREPORT_CHILD.lock().await;
-        let child = guard.take().ok_or("子进程不存在")?;
-        child.wait_with_output().await.map_err(|e| format!("等待进程失败: {}", e))?
+    
+    let content = match platform.as_str() {
+        "harmonyos" => {
+            // 鸿蒙设备使用指定的 shell 命令
+            let hdc_path = state.get_hdc_path();
+            let hdc = crate::hdc::HdcCommand::new(&hdc_path);
+            
+            // 执行指定的命令
+            let commands = vec!(
+                "bm dump -a -l",
+                "hidumper --cpuusage",
+                "hidumper --cpufreq",
+                "hidumper -e --list",
+                "hidumper --ipc -a --start-stat",
+                "hidumper -s WindowManagerService -a '-a'",
+            );
+            
+            let mut output = String::new();
+            
+            for cmd in commands {
+                eprintln!("[bugreport] +{} | hdc -t {} shell {}", chrono::Local::now().format("%H:%M:%S%.3f"), serial, cmd);
+                
+                // 检查是否被取消
+                let guard = BUGREPORT_CHILD.lock().await;
+                if guard.is_none() {
+                    return Err("导出已取消".to_string());
+                }
+                drop(guard);
+                
+                match hdc.shell_command(&serial, cmd).await {
+                    Ok(result) => {
+                        output.push_str(&format!("{}\n\n", result));
+                        eprintln!("[bugreport] -{} | {} OK", chrono::Local::now().format("%H:%M:%S%.3f"), cmd);
+                    }
+                    Err(e) => {
+                        output.push_str(&format!("执行失败: {}\n\n", e));
+                        eprintln!("[bugreport] -{} | {} FAILED: {}", chrono::Local::now().format("%H:%M:%S%.3f"), cmd, e);
+                    }
+                }
+            }
+            
+            output
+        }
+        _ => {
+            // Android 设备使用传统 bugreport
+            let adb_path = state.get_adb_path();
+            
+            let cmd_str = format!("-s {} bugreport", serial);
+            eprintln!("[bugreport] +{} | adb {}", chrono::Local::now().format("%H:%M:%S%.3f"), cmd_str);
+            
+            let child = tokio::process::Command::new(&adb_path)
+                .args(&["-s", &serial, "bugreport"])
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .map_err(|e| format!("启动进程失败: {}", e))?;
+            
+            // 存储子进程以便取消
+            {
+                let mut guard = BUGREPORT_CHILD.lock().await;
+                // 如果已有进程，先 kill
+                if let Some(mut old) = guard.take() {
+                    let _ = old.kill().await;
+                }
+                *guard = Some(child);
+            }
+            
+            // 取出子进程并等待完成
+            let output = {
+                let mut guard = BUGREPORT_CHILD.lock().await;
+                let child = guard.take().ok_or("子进程不存在")?;
+                child.wait_with_output().await.map_err(|e| format!("等待进程失败: {}", e))?
+            };
+            
+            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            
+            eprintln!("[bugreport] -{} | adb bugreport {} ({}ms, {} bytes)",
+                chrono::Local::now().format("%H:%M:%S%.3f"),
+                if output.status.success() { "OK" } else { "FAILED" },
+                start.elapsed().as_millis(),
+                stdout.len());
+            
+            if !output.status.success() {
+                return Err(format!("bugreport 失败: {}", if stderr.is_empty() { "未知错误" } else { &stderr }));
+            }
+            
+            stdout
+        }
     };
 
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-
-    eprintln!("[bugreport] -{} | {} {} ({}ms, {} bytes)",
-        chrono::Local::now().format("%H:%M:%S%.3f"),
-        cmd_str,
-        if output.status.success() { "OK" } else { "FAILED" },
-        start.elapsed().as_millis(),
-        stdout.len());
-
-    if !output.status.success() {
-        return Err(format!("bugreport 失败: {}", if stderr.is_empty() { "未知错误" } else { &stderr }));
-    }
-
+    // 构建完整的设备信息头部（包含所有主页参数）
+    let header = build_bugreport_header_full(&device_info, &lang);
+    let full_content = format!("{}\n\n{}", header, content);
+    let content_len = full_content.len();
+    
     // 写入文件
-    tokio::fs::write(&output_path, &stdout).await
+    tokio::fs::write(&output_path, full_content).await
         .map_err(|e| format!("写入文件失败: {}", e))?;
 
-    // 在文件头部追加设备信息
-    let header = build_bugreport_header(&device_info, &lang);
-    let content = format!("{}\n\n{}", header, stdout);
-    tokio::fs::write(&output_path, content).await
-        .map_err(|e| format!("写入文件失败: {}", e))?;
+    eprintln!("[bugreport] -{} | 导出完成 ({}ms, {} bytes)",
+        chrono::Local::now().format("%H:%M:%S%.3f"),
+        start.elapsed().as_millis(),
+        content_len);
+
+    // 清理占位进程
+    {
+        let mut guard = BUGREPORT_CHILD.lock().await;
+        if let Some(mut child) = guard.take() {
+            let _ = child.kill().await;
+        }
+    }
 
     Ok(format!("bugreport saved to {}", output_path))
 }
@@ -2527,6 +2604,85 @@ fn build_bugreport_header(info: &serde_json::Value, lang: &str) -> String {
     }
     if let Some(s) = info.get("storageInfo").and_then(|v| v.as_str()) {
         lines.push(format!("{}: {}", storage, s));
+    }
+
+    lines.push(String::new());
+    lines.push("========================================".to_string());
+    lines.push(format!("  {}", bugreport_title));
+    lines.push("========================================".to_string());
+
+    lines.join("\n")
+}
+
+/// 构建设备信息头部（包含所有主页参数面板数据）
+fn build_bugreport_header_full(info: &serde_json::Value, lang: &str) -> String {
+    let is_zh = lang.starts_with("zh");
+
+    let title = if is_zh { "设备信息" } else { "Device Information" };
+    let exported = if is_zh { "导出时间" } else { "Exported" };
+    let bugreport_title = if is_zh { "诊断报告" } else { "Bugreport" };
+
+    let mut lines = vec!(
+        "========================================".to_string(),
+        format!("  {}", title),
+        format!("  {}: {}", exported, chrono::Local::now().format("%Y-%m-%d %H:%M:%S")),
+        "========================================".to_string(),
+        String::new(),
+    );
+
+    // 遍历所有设备信息键值对，确保包含所有主页参数
+    if let Some(obj) = info.as_object() {
+        for (key, value) in obj {
+            let label = match key.as_str() {
+                "marketName" => if is_zh { "设备名称" } else { "Device Name" },
+                "model" => if is_zh { "型号" } else { "Model" },
+                "brand" => if is_zh { "品牌" } else { "Brand" },
+                "serial" => if is_zh { "序列号" } else { "Serial" },
+                "osVersion" => if is_zh { "系统版本" } else { "OS Version" },
+                "apiLevel" => if is_zh { "API 级别" } else { "API Level" },
+                "kernelVersion" => if is_zh { "内核版本" } else { "Kernel Version" },
+                "cpuInfo" => if is_zh { "处理器" } else { "CPU" },
+                "screenResolution" => if is_zh { "屏幕分辨率" } else { "Screen Resolution" },
+                "memoryInfo" => if is_zh { "内存" } else { "Memory" },
+                "storageInfo" => if is_zh { "存储" } else { "Storage" },
+                "securityPatch" => if is_zh { "安全补丁" } else { "Security Patch" },
+                "abiList" => if is_zh { "ABI" } else { "ABI" },
+                "maxRefreshRate" => if is_zh { "最大刷新率" } else { "Max Refresh Rate" },
+                "deviceType" => if is_zh { "设备类型" } else { "Device Type" },
+                "productSeries" => if is_zh { "产品系列" } else { "Product Series" },
+                "productModel" => if is_zh { "产品型号" } else { "Product Model" },
+                "hardwareModel" => if is_zh { "硬件型号" } else { "Hardware Model" },
+                "incremental" => if is_zh { "增量版本" } else { "Incremental" },
+                "buildId" => if is_zh { "构建 ID" } else { "Build ID" },
+                "releaseType" => if is_zh { "发布类型" } else { "Release Type" },
+                "systemFingerprint" => if is_zh { "系统指纹" } else { "System Fingerprint" },
+                "buildTime" => if is_zh { "构建时间" } else { "Build Time" },
+                "lastRebootReason" => if is_zh { "上次重启原因" } else { "Last Reboot Reason" },
+                "udid" => if is_zh { "UDID" } else { "UDID" },
+                "batterySn" => if is_zh { "电池 SN" } else { "Battery SN" },
+                "storageCid" => if is_zh { "存储 CID" } else { "Storage CID" },
+                "systemCrash" => if is_zh { "系统崩溃" } else { "System Crash" },
+                "systemType" => if is_zh { "系统类型" } else { "System Type" },
+                "bootloaderLock" => if is_zh { "Bootloader 锁" } else { "Bootloader Lock" },
+                "deviceRegion" => if is_zh { "设备区域" } else { "Device Region" },
+                "oemMode" => if is_zh { "OEM 模式" } else { "OEM Mode" },
+                "boardId" => if is_zh { "主板 ID" } else { "Board ID" },
+                "uptime" => if is_zh { "运行时间" } else { "Uptime" },
+                "loadAverage" => if is_zh { "负载均值" } else { "Load Average" },
+                _ => key.as_str(), // 未知键直接使用键名
+            };
+
+            if let Some(s) = value.as_str() {
+                if !s.is_empty() {
+                    lines.push(format!("{}: {}", label, s));
+                }
+            } else if let Some(n) = value.as_number() {
+                lines.push(format!("{}: {}", label, n));
+            } else if value.is_boolean() {
+                let b = value.as_bool().unwrap_or(false);
+                lines.push(format!("{}: {}", label, if b { "是" } else { "否" }));
+            }
+        }
     }
 
     lines.push(String::new());

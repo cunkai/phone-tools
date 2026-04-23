@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { useDeviceStore } from "../store/deviceStore";
 import LoadingSpinner from "../components/LoadingSpinner";
-import { takeScreenshot, getFileList, getLogcat, startLogcatStream, stopLogcatStream, hdcScreenshot, executeShell, hdcShell, hdcGetFileList, hdcPullFile, hdcPushFile, hdcCheckPathsPermission } from "../api/adb";
+import { takeScreenshot, getFileList, getLogcat, startLogcatStream, stopLogcatStream, hdcScreenshot, executeShell, hdcShell, hdcGetFileList, hdcPullFile, hdcPushFile, hdcCheckPathsPermission, pullFile, pushFile } from "../api/adb";
 import { onLogOutput } from "../api/events";
 import type { FileInfo, HdcFileInfo } from "../types";
 import { open, save } from "@tauri-apps/plugin-dialog";
@@ -309,8 +309,8 @@ const FileManagerTab: React.FC = () => {
 
   useEffect(() => {
     if (currentDevice) {
-      // 鸿蒙设备默认从 Photo 目录开始
-      const initialPath = isHarmonyOS ? "/mnt/data/100/media_fuse/Photo" : "/";
+      // 鸿蒙设备默认从 Photo 目录开始，安卓设备默认从 /storage/emulated/0 开始
+      const initialPath = isHarmonyOS ? "/mnt/data/100/media_fuse/Photo" : "/storage/emulated/0";
       loadFiles(initialPath);
     }
   }, [currentDevice, isHarmonyOS, loadFiles]);
@@ -358,8 +358,10 @@ const FileManagerTab: React.FC = () => {
           const elapsed = Date.now() - startTime;
           alert(t("tools.downloadSuccess") + `, 耗时 ${elapsed} ms`);
         } else {
-          // 这里可以添加 Android 设备的文件下载逻辑
-          alert(t("tools.downloadFailed") + `: Android download not implemented`);
+          // Android 设备的文件下载逻辑
+          await pullFile(currentDevice, file.path, savePath);
+          const elapsed = Date.now() - startTime;
+          alert(t("tools.downloadSuccess") + `, 耗时 ${elapsed} ms`);
         }
       }
     } catch (e: any) {
@@ -388,8 +390,8 @@ const FileManagerTab: React.FC = () => {
           if (isHarmonyOS) {
             await hdcPushFile(currentDevice, filePath, `${currentPath}/${fileName}`);
           } else {
-            // 这里可以添加 Android 设备的文件上传逻辑
-            alert(t("tools.uploadFailed") + `: Android upload not implemented`);
+            // Android 设备的文件上传逻辑
+            await pushFile(currentDevice, filePath, `${currentPath}/${fileName}`);
           }
         }
         loadFiles(currentPath);
@@ -538,11 +540,9 @@ const FileManagerTab: React.FC = () => {
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 relative">
                       <p className="text-sm text-dark-200 truncate">{file.name}</p>
-                      {'full_info' in file && file.full_info && (
-                        <span className="absolute left-0 top-full mt-1 bg-dark-800/90 border border-dark-700/50 rounded px-2 py-1 text-xs text-dark-400 whitespace-nowrap opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-10 font-mono">
-                          {file.full_info}
-                        </span>
-                      )}
+                      <span className="absolute left-0 top-full mt-1 bg-dark-800/90 border border-dark-700/50 rounded px-2 py-1 text-xs text-dark-400 whitespace-nowrap opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-10 font-mono">
+                        {file.full_info}
+                      </span>
                     </div>
                   </div>
                   <div className="flex items-center gap-2">

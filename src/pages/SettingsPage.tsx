@@ -145,6 +145,43 @@ const SettingsPage: React.FC = () => {
         {t("nav.settings")}
       </h1>
 
+      {/* 个人链接 */}
+      <div className="mb-6 space-y-2">
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-dark-400 min-w-[100px]">我的个人主页：</span>
+          <a 
+            href="https://gitee.com/cunkai" 
+            target="_blank" 
+            rel="noopener noreferrer"
+            className="text-sm text-accent-400 hover:underline transition-colors"
+          >
+            https://gitee.com/cunkai
+          </a>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-dark-400 min-w-[100px]">本软件下载地址：</span>
+          <a 
+            href="https://pan.quark.cn/s/2d9e3ec93ba5" 
+            target="_blank" 
+            rel="noopener noreferrer"
+            className="text-sm text-accent-400 hover:underline transition-colors"
+          >
+            https://pan.quark.cn/s/2d9e3ec93ba5
+          </a>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-dark-400 min-w-[100px]">项目介绍：</span>
+          <a 
+            href="https://forum.trae.cn/t/topic/11969" 
+            target="_blank" 
+            rel="noopener noreferrer"
+            className="text-sm text-accent-400 hover:underline transition-colors"
+          >
+            https://forum.trae.cn/t/topic/11969
+          </a>
+        </div>
+      </div>
+
       {/* Saved Toast */}
       {saved && (
         <div className="fixed top-16 right-4 z-50 px-4 py-2 bg-green-500/20 border border-green-500/30 rounded-lg text-sm text-green-400 animate-fade-in">

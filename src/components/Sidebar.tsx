@@ -84,19 +84,19 @@ const navItems: NavItem[] = [
     labelKey: "nav.control",
     platforms: ["android"], // 设备控制仅 Android 支持
   },
-  {
-    path: "/fps",
-    icon: (
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M12 20V10" />
-        <path d="M18 20V4" />
-        <path d="M6 20v-4" />
-        <line x1="2" y1="20" x2="22" y2="20" />
-      </svg>
-    ),
-    labelKey: "nav.fpsMonitor",
-    platforms: ["android"], // FPS 监控仅 Android 支持
-  },
+  // {
+  //   path: "/fps",
+  //   icon: (
+  //     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+  //       <path d="M12 20V10" />
+  //       <path d="M18 20V4" />
+  //       <path d="M6 20v-4" />
+  //       <line x1="2" y1="20" x2="22" y2="20" />
+  //     </svg>
+  //   ),
+  //   labelKey: "nav.fpsMonitor",
+  //   platforms: ["android"], // FPS 监控仅 Android 支持
+  // }, // 暂时屏蔽，功能不够完整
   {
     path: "/terminal",
     icon: (

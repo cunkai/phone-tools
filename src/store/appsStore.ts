@@ -39,8 +39,12 @@ export const useAppsStore = create<AppsStore>((set, get) => ({
   fetchApps: async (serial: string) => {
     set({ isLoading: true, error: null });
     try {
-      const devices = useDeviceStore.getState().devices;
+      const deviceStore = useDeviceStore.getState();
+      const devices = deviceStore.devices;
       const platform = devices.find((d) => d.serial === serial)?.platform || "android";
+
+      // 设置 adbBusy 为 true，暂停设备轮询
+      deviceStore.setAdbBusy(true);
 
       if (platform === "harmonyos") {
         // ===== 鸿蒙：仅获取包名和应用名称 =====
@@ -66,13 +70,20 @@ export const useAppsStore = create<AppsStore>((set, get) => ({
         error: err instanceof Error ? err.message : "Failed to fetch apps",
         isLoading: false,
       });
+    } finally {
+      // 无论成功还是失败，都设置 adbBusy 为 false，恢复设备轮询
+      useDeviceStore.getState().setAdbBusy(false);
     }
   },
 
   fetchAppDetail: async (serial: string, packageName: string) => {
     try {
-      const devices = useDeviceStore.getState().devices;
+      const deviceStore = useDeviceStore.getState();
+      const devices = deviceStore.devices;
       const platform = devices.find((d) => d.serial === serial)?.platform || "android";
+
+      // 设置 adbBusy 为 true，暂停设备轮询
+      deviceStore.setAdbBusy(true);
 
       let detail;
       if (platform === "harmonyos") {
@@ -104,6 +115,9 @@ export const useAppsStore = create<AppsStore>((set, get) => ({
       set({
         error: err instanceof Error ? err.message : "Failed to fetch app detail",
       });
+    } finally {
+      // 无论成功还是失败，都设置 adbBusy 为 false，恢复设备轮询
+      useDeviceStore.getState().setAdbBusy(false);
     }
   },
 

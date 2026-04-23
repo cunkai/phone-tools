@@ -428,6 +428,8 @@ const en = {
     variableNamePlaceholder: "Variable Name",
     x: "X",
     y: "Y",
+    from: "From",
+    to: "To",
     fromX: "From X",
     fromY: "From Y",
     toX: "To X",

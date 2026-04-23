@@ -110,6 +110,7 @@ pub struct FileInfo {
     pub size: String,
     pub permissions: String,
     pub last_modified: String,
+    pub full_info: String,
 }
 
 /// APK 信息
@@ -1072,7 +1073,7 @@ impl AdbCommand {
             is_system: false,
             uid: 0,
         };
-
+        eprintln!("11111");
         // 获取 dumpsys package 信息
         let dump_output = self
             .shell_command(
@@ -1081,6 +1082,7 @@ impl AdbCommand {
             )
             .await
             .unwrap_or_default();
+        eprintln!("2222");
 
         // 解析版本名
         for line in dump_output.lines() {
@@ -1105,6 +1107,7 @@ impl AdbCommand {
                 app_info.is_system = true;
             }
         }
+        eprintln!("33333");
 
         // 获取应用名称（通过 dumpsys package 中的 label）
         let label_output = self
@@ -1120,6 +1123,7 @@ impl AdbCommand {
                 break;
             }
         }
+        eprintln!("444444");
 
         // 获取应用大小
         let size_output = self
@@ -1135,6 +1139,7 @@ impl AdbCommand {
                 break;
             }
         }
+        eprintln!("55555");
 
         // 获取首次安装时间
         let time_output = self
@@ -1152,6 +1157,7 @@ impl AdbCommand {
                 break;
             }
         }
+        eprintln!("66666");
 
         // 尝试获取图标 (base64)
         let icon_output = self
@@ -1165,6 +1171,7 @@ impl AdbCommand {
             .await
             .unwrap_or_default();
         app_info.icon_base64 = crate::utils::extract_base64_icon(&icon_output);
+        eprintln!("777777");
 
         Ok(app_info)
     }
@@ -1388,7 +1395,6 @@ impl AdbCommand {
     pub async fn shell_command(&self, serial: &str, cmd: &str) -> AdbResult<String> {
         let _permit = ADB_SEMAPHORE.acquire().await
             .map_err(|_| AdbError::ExecutionFailed("ADB 并发限制获取失败".to_string()))?;
-
         // 如果命令包含管道、重定向等 shell 特殊字符，使用 sh -c 包装
         let args: Vec<&str> = if cmd.contains('|') || cmd.contains('>') || cmd.contains('<') || cmd.contains('&') || cmd.contains(';') {
             vec!["-s", serial, "shell", "sh", "-c", cmd]
@@ -1398,11 +1404,11 @@ impl AdbCommand {
 
         let mut cmd = Command::new(&self.adb_path);
         cmd.args(&args);
-        
+
         // 在 Windows 上设置 CREATE_NO_WINDOW 标志，防止 cmd 窗口弹出
         #[cfg(target_os = "windows")]
         { cmd.creation_flags(CREATE_NO_WINDOW); }
-        
+
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(30),
             cmd.output()
@@ -1577,31 +1583,58 @@ impl AdbCommand {
             .shell_command(serial, &format!("ls -la {}", path))
             .await?;
 
+        // 检查输出是否包含错误信息
+        for line in output.lines() {
+            let line = line.trim();
+            if line.starts_with("ls:") && (line.contains("Permission denied") || line.contains("权限")) {
+                return Err(AdbError::ExecutionFailed(line.to_string()));
+            }
+        }
+
         let mut files = Vec::new();
 
-        for line in output.lines().skip(1) {
-            // 跳过 "total" 行
+        for line in output.lines() {
+            // 跳过 "total" 行和空行
             if line.starts_with("total") || line.trim().is_empty() {
                 continue;
             }
 
+            // 直接使用整行作为 full_info
+            let full_info = line.to_string();
+
+            // 提取权限字符串
+            let permissions = line.split_whitespace().next().unwrap_or("").to_string();
+            let is_directory = permissions.starts_with('d');
+
+            // 提取文件名（从第8个空格开始）
             let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() < 6 {
+            // 确保至少有8个部分（权限、链接数、所有者、组、大小、日期、时间、文件名）
+            let name = if parts.len() >= 8 {
+                // 从第8个部分开始，剩下的都是文件名
+                parts[7..].join(" ").to_string()
+            } else {
+                // 如果部分不足，尝试使用最后一个部分作为文件名
+                parts.last().unwrap_or(&"").to_string()
+            };
+
+            // 跳过 . 和 .. 特殊目录
+            if name == "." || name == ".." {
                 continue;
             }
 
-            let permissions = parts[0].to_string();
-            let is_directory = permissions.starts_with('d');
-            let size = parts[4].parse::<u64>().unwrap_or(0);
-            let name = parts[parts.len() - 1].to_string();
             let full_path = if path.ends_with('/') {
                 format!("{}{}", path, name)
             } else {
                 format!("{}/{}", path, name)
             };
 
-            // 解析日期（简化处理）
-            let last_modified = format!("{} {} {}", parts[5], parts[6], parts.get(7).unwrap_or(&""));
+            // 提取大小（第5个部分）
+            let size_str = line.split_whitespace().nth(4).unwrap_or("0").to_string();
+            let size = size_str.parse::<u64>().unwrap_or(0);
+
+            // 提取修改时间（第6-8个部分）
+            let time_parts: Vec<&str> = line.split_whitespace().skip(5).take(3).collect();
+            let last_modified = time_parts.join(" ");
 
             files.push(FileInfo {
                 name,
@@ -1610,10 +1643,36 @@ impl AdbCommand {
                 size: crate::utils::format_file_size(size),
                 permissions,
                 last_modified,
+                full_info,
             });
         }
 
         Ok(files)
+    }
+
+    /// 启动 logcat 流
+    pub async fn start_logcat_stream(&self, serial: &str) -> AdbResult<tokio::process::Child> {
+        let args = &["-s", serial, "logcat"];
+        let cmd_str = args.join(" ");
+        eprintln!("[adb] +{} | {:?}", chrono::Local::now().format("%H:%M:%S%.3f"), cmd_str);
+
+        let mut cmd = tokio::process::Command::new(&self.adb_path);
+        cmd.args(args)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        
+        // 在 Windows 上设置 CREATE_NO_WINDOW 标志，防止 cmd 窗口弹出
+        #[cfg(target_os = "windows")]
+        { cmd.creation_flags(CREATE_NO_WINDOW); }
+        
+        let child = cmd.spawn()
+            .map_err(|e| {
+                eprintln!("[adb] -{} | {:?} FAILED", chrono::Local::now().format("%H:%M:%S%.3f"), cmd_str);
+                AdbError::ExecutionFailed(format!("启动 logcat 流失败: {}", e))
+            })?;
+        
+        eprintln!("[adb] -{} | {:?} OK (started stream)", chrono::Local::now().format("%H:%M:%S%.3f"), cmd_str);
+        Ok(child)
     }
 
     /// 从 xapk 归档中解压 base APK 并用 aapt 解析信息（用于提取 min_sdk 等）
