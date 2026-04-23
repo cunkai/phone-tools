@@ -6,6 +6,12 @@ use std::sync::LazyLock;
 use std::collections::HashMap;
 use tokio::sync::Mutex;
 
+// 跨平台设置命令创建标志
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 /// 全局 HDC 命令并发限制（严格串行，同一时间只允许 1 个 HDC 命令执行）
 /// 这是核心机制：确保上一条 HDC 命令完全结束后才执行下一条，防止设备 offline
 static HDC_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(1));
@@ -169,9 +175,14 @@ impl HdcCommand {
         eprintln!("[hdc] +{} | {:?}", chrono::Local::now().format("%H:%M:%S%.3f"), cmd_str);
 
         let start = std::time::Instant::now();
-        let output = Command::new(&self.hdc_path)
-            .args(args)
-            .output()
+        let mut cmd = Command::new(&self.hdc_path);
+        cmd.args(args);
+        
+        // 在 Windows 上设置 CREATE_NO_WINDOW 标志，防止 cmd 窗口弹出
+        #[cfg(target_os = "windows")]
+        { cmd.creation_flags(CREATE_NO_WINDOW); }
+        
+        let output = cmd.output()
             .await
             .map_err(|e| {
                 eprintln!("[hdc] -{} | {:?} FAILED after {}ms", chrono::Local::now().format("%H:%M:%S%.3f"), cmd_str, start.elapsed().as_millis());
@@ -324,9 +335,14 @@ impl HdcCommand {
                 let _permit = sem.acquire().await.ok()?;
 
                 // 执行 bm dump -n <package>
-                let output = tokio::process::Command::new(&hdc_path)
-                    .args(["-t", &serial, "shell", "bm", "dump", "-n", &package])
-                    .output()
+                let mut cmd = tokio::process::Command::new(&hdc_path);
+                cmd.args(["-t", &serial, "shell", "bm", "dump", "-n", &package]);
+                
+                // 在 Windows 上设置 CREATE_NO_WINDOW 标志，防止 cmd 窗口弹出
+                #[cfg(target_os = "windows")]
+                { cmd.creation_flags(CREATE_NO_WINDOW); }
+                
+                let output = cmd.output()
                     .await
                     .ok()?;
 
@@ -1220,9 +1236,14 @@ impl HdcCommand {
         eprintln!("[hdc] +{} | {}", chrono::Local::now().format("%H:%M:%S%.3f"), cmd_str);
 
         let start = std::time::Instant::now();
-        let output = Command::new(&self.hdc_path)
-            .args(args)
-            .output()
+        let mut cmd = Command::new(&self.hdc_path);
+        cmd.args(args);
+        
+        // 在 Windows 上设置 CREATE_NO_WINDOW 标志，防止 cmd 窗口弹出
+        #[cfg(target_os = "windows")]
+        { cmd.creation_flags(CREATE_NO_WINDOW); }
+        
+        let output = cmd.output()
             .await
             .map_err(|e| {
                 eprintln!("[hdc] -{} | {} FAILED after {}ms", chrono::Local::now().format("%H:%M:%S%.3f"), cmd_str, start.elapsed().as_millis());
@@ -1240,9 +1261,14 @@ impl HdcCommand {
         let recv_cmd_str = recv_args.join(" ");
         eprintln!("[hdc] +{} | {}", chrono::Local::now().format("%H:%M:%S%.3f"), recv_cmd_str);
 
-        let pull_output = Command::new(&self.hdc_path)
-            .args(recv_args)
-            .output()
+        let mut cmd = Command::new(&self.hdc_path);
+        cmd.args(recv_args);
+        
+        // 在 Windows 上设置 CREATE_NO_WINDOW 标志，防止 cmd 窗口弹出
+        #[cfg(target_os = "windows")]
+        { cmd.creation_flags(CREATE_NO_WINDOW); }
+        
+        let pull_output = cmd.output()
             .await
             .map_err(|e| HdcError::ExecutionFailed(format!("file recv 失败: {}", e)))?;
 
@@ -1260,9 +1286,14 @@ impl HdcCommand {
             .map_err(|e| HdcError::ExecutionFailed(format!("读取本地文件失败: {}", e)))?;
 
         // 清理设备端文件
-        let _ = Command::new(&self.hdc_path)
-            .args(["-t", serial, "shell", "rm", "-f", remote_file])
-            .spawn();
+        let mut cmd = Command::new(&self.hdc_path);
+        cmd.args(["-t", serial, "shell", "rm", "-f", remote_file]);
+        
+        // 在 Windows 上设置 CREATE_NO_WINDOW 标志，防止 cmd 窗口弹出
+        #[cfg(target_os = "windows")]
+        { cmd.creation_flags(CREATE_NO_WINDOW); }
+        
+        let _ = cmd.spawn();
 
         if data.is_empty() {
             return Err(HdcError::ExecutionFailed("截图返回空数据".to_string()));
@@ -1430,9 +1461,14 @@ impl HdcCommand {
         eprintln!("[hdc] +{} | {}", chrono::Local::now().format("%H:%M:%S%.3f"), cmd_str);
 
         let start = std::time::Instant::now();
-        let output = tokio::process::Command::new(&self.hdc_path)
-            .args(&args)
-            .output()
+        let mut cmd = tokio::process::Command::new(&self.hdc_path);
+        cmd.args(&args);
+        
+        // 在 Windows 上设置 CREATE_NO_WINDOW 标志，防止 cmd 窗口弹出
+        #[cfg(target_os = "windows")]
+        { cmd.creation_flags(CREATE_NO_WINDOW); }
+        
+        let output = cmd.output()
             .await
             .map_err(|e| {
                 eprintln!("[hdc] -{} | {} FAILED after {}ms", chrono::Local::now().format("%H:%M:%S%.3f"), cmd_str, start.elapsed().as_millis());
@@ -1480,11 +1516,16 @@ impl HdcCommand {
         let cmd_str = args.join(" ");
         eprintln!("[hdc] +{} | {:?}", chrono::Local::now().format("%H:%M:%S%.3f"), cmd_str);
 
-        let child = tokio::process::Command::new(&self.hdc_path)
-            .args(args)
+        let mut cmd = tokio::process::Command::new(&self.hdc_path);
+        cmd.args(args)
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
+            .stderr(std::process::Stdio::piped());
+        
+        // 在 Windows 上设置 CREATE_NO_WINDOW 标志，防止 cmd 窗口弹出
+        #[cfg(target_os = "windows")]
+        { cmd.creation_flags(CREATE_NO_WINDOW); }
+        
+        let child = cmd.spawn()
             .map_err(|e| {
                 eprintln!("[hdc] -{} | {:?} FAILED", chrono::Local::now().format("%H:%M:%S%.3f"), cmd_str);
                 HdcError::ExecutionFailed(format!("启动 hilog 流失败: {}", e))

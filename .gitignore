@@ -39,3 +39,5 @@ TODO.md
 # Examples and bench directories
 /examples/**/src-tauri/gen/
 /bench/**/src-tauri/gen/
+src-tauri/src/adb.rs
+dist/assets/

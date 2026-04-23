@@ -1,6 +1,12 @@
 use std::path::Path;
 use std::process::Command;
 
+// 跨平台设置命令创建标志
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 /// 在系统中查找 ADB 可执行文件路径
 /// 优先级: 内置 tools 目录 > PATH 环境变量 > 常见安装位置 > ANDROID_HOME
 pub fn find_adb_path() -> Option<String> {
@@ -11,7 +17,11 @@ pub fn find_adb_path() -> Option<String> {
     }
 
     // 1. 检查 PATH 中是否有 adb
-    if let Ok(output) = Command::new("which").arg("adb").output() {
+    let mut cmd = Command::new("which");
+    cmd.arg("adb");
+    #[cfg(target_os = "windows")]
+    { cmd.creation_flags(CREATE_NO_WINDOW); }
+    if let Ok(output) = cmd.output() {
         if output.status.success() {
             let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
             if !path.is_empty() {
@@ -23,7 +33,10 @@ pub fn find_adb_path() -> Option<String> {
     // 2. 检查 where (Windows)
     #[cfg(target_os = "windows")]
     {
-        if let Ok(output) = Command::new("where").arg("adb").output() {
+        let mut cmd = Command::new("where");
+        cmd.arg("adb");
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        if let Ok(output) = cmd.output() {
             if output.status.success() {
                 let path = String::from_utf8_lossy(&output.stdout)
                     .lines()
@@ -163,7 +176,10 @@ pub fn find_hdc_path() -> Option<String> {
     // 1. 检查 PATH 中是否有 hdc
     #[cfg(target_os = "windows")]
     {
-        if let Ok(output) = Command::new("where").arg("hdc").output() {
+        let mut cmd = Command::new("where");
+        cmd.arg("hdc");
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        if let Ok(output) = cmd.output() {
             if output.status.success() {
                 let path = String::from_utf8_lossy(&output.stdout)
                     .lines()
@@ -180,7 +196,9 @@ pub fn find_hdc_path() -> Option<String> {
 
     #[cfg(not(target_os = "windows"))]
     {
-        if let Ok(output) = Command::new("which").arg("hdc").output() {
+        let mut cmd = Command::new("which");
+        cmd.arg("hdc");
+        if let Ok(output) = cmd.output() {
             if output.status.success() {
                 let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
                 if !path.is_empty() {

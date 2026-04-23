@@ -22,8 +22,8 @@
       sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    background-color: #020617;
-    color: #e2e8f0;
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
   }
 
   /* 深色主题变量 */
@@ -43,28 +43,118 @@
   /* 浅色主题变量 */
   .light-theme {
     --bg-primary: #f8fafc;
-    --bg-secondary: #ffffff;
-    --bg-tertiary: #f1f5f9;
-    --text-primary: #1e293b;
-    --text-secondary: #475569;
-    --text-muted: #94a3b8;
+    --bg-secondary: #f8fafc;
+    --bg-tertiary: #f8fafc;
+    --text-primary: #000000;
+    --text-secondary: #000000;
+    --text-muted: #000000;
     --border-color: #e2e8f0;
-    --accent-color: #3b82f6;
+    --accent-color: #60a5fa;
     --success-color: #10b981;
     --error-color: #ef4444;
   }
 
   /* 深色主题 */
   .dark-theme {
+    height: 100%;
+    width: 100%;
     background-color: var(--bg-primary);
     color: var(--text-primary);
   }
 
   /* 浅色主题 */
   .light-theme {
+    height: 100%;
+    width: 100%;
     background-color: var(--bg-primary);
     color: var(--text-primary);
   }
+
+  /* 覆盖 Tailwind 的颜色类以支持主题切换 */
+  .dark-theme .bg-dark-950 { background-color: #020617 !important; }
+  .dark-theme .bg-dark-900 { background-color: #0f172a !important; }
+  .dark-theme .bg-dark-850 { background-color: #172033 !important; }
+  .dark-theme .bg-dark-800 { background-color: #1e293b !important; }
+  .dark-theme .bg-dark-700 { background-color: #334155 !important; }
+  .dark-theme .bg-dark-600 { background-color: #475569 !important; }
+  .dark-theme .bg-dark-500 { background-color: #64748b !important; }
+  .dark-theme .bg-dark-400 { background-color: #94a3b8 !important; }
+  .dark-theme .bg-dark-300 { background-color: #cbd5e1 !important; }
+  .dark-theme .bg-dark-200 { background-color: #e2e8f0 !important; }
+  .dark-theme .bg-dark-100 { background-color: #f1f5f9 !important; }
+
+  .dark-theme .text-dark-100 { color: #e2e8f0 !important; }
+  .dark-theme .text-dark-200 { color: #cbd5e1 !important; }
+  .dark-theme .text-dark-300 { color: #94a3b8 !important; }
+  .dark-theme .text-dark-400 { color: #64748b !important; }
+  .dark-theme .text-dark-500 { color: #475569 !important; }
+  .dark-theme .text-dark--600 { color: #334155 !important; }
+  .dark-theme .text-dark-700 { color: #1e293b !important; }
+  .dark-theme .text-dark-800 { color: #0f172a !important; }
+  .dark-theme .text-dark-900 { color: #020617 !important; }
+
+  .dark-theme .border-dark-100 { border-color: #e2e8f0 !important; }
+  .dark-theme .border-dark--200 { border-color: #cbd5e1 !important; }
+  .dark-theme .border-dark-300 { border-color: #94a3b8 !important; }
+  .dark-theme .border-dark-400 { border-color: #64748b !important; }
+  .dark-theme .border-dark-500 { border-color: #475569 !important; }
+  .dark-theme .border-dark-600 { border-color: #334155 !important; }
+  .dark-theme .border-dark-700 { border-color: #1e293b !important; }
+  .dark-theme .border-dark-800 { border-color: #0f172a !important; }
+  .dark-theme .border-dark-900 { border-color: #020617 !important; }
+
+  .light-theme .bg-dark-950 { background-color: #f8fafc !important; }
+  .light-theme .bg-dark-900 { background-color: #f8fafc !important; }
+  .light-theme .bg-dark-850 { background-color: #f8fafc !important; }
+  .light-theme .bg-dark-800 { background-color: #f8fafc !important; }
+  .light-theme .bg-dark-700 { background-color: #f8fafc !important; }
+  .light-theme .bg-dark-600 { background-color: #f8fafc !important; }
+  .light-theme .bg-dark-500 { background-color: #f8fafc !important; }
+  .light-theme .bg-dark-400 { background-color: #f8fafc !important; }
+  .light-theme .bg-dark-300 { background-color: #f8fafc !important; }
+  .light-theme .bg-dark-200 { background-color: #f8fafc !important; }
+  .light-theme .bg-dark-100 { background-color: #f8fafc !important; }
+
+  .light-theme .text-dark-100 { color: #000000 !important; }
+  .light-theme .text-dark-200 { color: #000000 !important; }
+  .light-theme .text-dark-300 { color: #000000 !important; }
+  .light-theme .text-dark-400 { color: #000000 !important; }
+  .light-theme .text-dark-500 { color: #000000 !important; }
+  .light-theme .text-dark-600 { color: #000000 !important; }
+  .light-theme .text-dark-700 { color: #000000 !important; }
+  .light-theme .text-dark-800 { color: #000000 !important; }
+  .light-theme .text-dark-900 { color: #000000 !important; }
+
+  /* 覆盖导航栏和侧边栏的背景色 */
+  .light-theme .bg-dark-900\/80 { background-color: #f8fafc !important; }
+  .light-theme .bg-dark-800\/50 { background-color: #f8fafc !important; }
+  .light-theme .bg-dark-800\/30 { background-color: #f8fafc !important; }
+  .light-theme .bg-dark-700\/50 { background-color: #f8fafc !important; }
+  .light-theme .bg-dark-700\/30 { background-color: #f8fafc !important; }
+  .light-theme .bg-dark-600\/50 { background-color: #f8fafc !important; }
+
+  .light-theme .border-dark-100 { border-color: #e2e8f0 !important; }
+  .light-theme .border-dark-200 { border-color: #cbd5e1 !important; }
+  .light-theme .border-dark-300 { border-color: #94a3b8 !important; }
+  .light-theme .border-dark-400 { border-color: #64748b !important; }
+  .light-theme .border-dark-500 { border-color: #475569 !important; }
+  .light-theme .border-dark-600 { border-color: #334155 !important; }
+  .light-theme .border-dark-700 { border-color: #1e293b !important; }
+  .light-theme .border-dark-800 { border-color: #0f172a !important; }
+  .light-theme .border-dark-900 { border-color: #020617 !important; }
+
+  /* 覆盖 accent 颜色 */
+  .dark-theme .accent-500, .dark-theme .accent-400 { color: #3b82f6 !important; }
+  .dark-theme .bg-accent-50010 { background-color: rgba(59, 130, 246, 0.1) !important; }
+  .dark-theme .bg-accent-50020 { background-color: rgba(59, 130, 246, 0.2) !important; }
+  .dark-theme .bg-accent-50030 { background-color: rgba(59, 130, 246, 0.3) !important; }
+  .dark-theme .border-accent-500 { border-color: #3b82f6 !important; }
+
+  .light-theme .accent-500, .light-theme .accent-400 { color: #60a5fa !important; }
+  .light-theme .bg-accent-50010 { background-color: rgba(96, 165, 250, 0.1) !important; }
+  .light-theme .bg-accent-50020 { background-color: rgba(96, 165, 250, 0.2) !important; }
+  .light-theme .bg-accent-50030 { background-color: rgba(96, 165, 250, 0.3) !important; }
+  .light-theme .border-accent-500 { border-color: #60a5fa !important; }
 
   /* 滚动条样式 */
   ::-webkit-scrollbar {
@@ -148,14 +238,17 @@
   }
 
   .bg-accent-50010 {
+    /* 将由 .dark-theme 和 .light-theme 覆盖 */
     background-color: rgba(59, 130, 246, 0.1);
   }
 
   .bg-accent-50020 {
+    /* 将由 .dark-theme 和 .light-theme 覆盖 */
     background-color: rgba(59, 130, 246, 0.2);
   }
 
   .bg-accent-50030 {
+    /* 将由 .dark-theme 和 .light-theme 覆盖 */
     background-color: rgba(59, 130, 246, 0.3);
   }
 

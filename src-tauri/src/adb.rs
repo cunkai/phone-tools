@@ -5,6 +5,12 @@ use tokio::sync::Semaphore;
 use std::sync::LazyLock;
 use std::io::{Read, Write};
 
+// 跨平台设置命令创建标志
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
 /// 全局 ADB 命令并发限制（严格串行，同一时间只允许 1 个 ADB 命令执行）
 /// 这是核心机制：确保上一条 ADB 命令完全结束后才执行下一条，防止设备 offline
 static ADB_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(1));
@@ -200,9 +206,14 @@ impl AdbCommand {
         eprintln!("[adb] +{} | {:?}", chrono::Local::now().format("%H:%M:%S%.3f"), cmd_str);
 
         let start = std::time::Instant::now();
-        let output = Command::new(&self.adb_path)
-            .args(args)
-            .output()
+        let mut cmd = Command::new(&self.adb_path);
+        cmd.args(args);
+        
+        // 在 Windows 上设置 CREATE_NO_WINDOW 标志，防止 cmd 窗口弹出
+        #[cfg(target_os = "windows")]
+        { cmd.creation_flags(CREATE_NO_WINDOW); }
+        
+        let output = cmd.output()
             .await
             .map_err(|e| {
                 eprintln!("[adb] -{} | {:?} FAILED after {}ms", chrono::Local::now().format("%H:%M:%S%.3f"), cmd_str, start.elapsed().as_millis());
@@ -287,11 +298,16 @@ impl AdbCommand {
     where
         F: FnMut(u32, &str),
     {
-        let mut child = tokio::process::Command::new(&self.adb_path)
-            .args(["-s", serial, "install", "-r", path])
+        let mut cmd = tokio::process::Command::new(&self.adb_path);
+        cmd.args(["-s", serial, "install", "-r", path])
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
+            .stderr(std::process::Stdio::piped());
+        
+        // 在 Windows 上设置 CREATE_NO_WINDOW 标志，防止 cmd 窗口弹出
+        #[cfg(target_os = "windows")]
+        { cmd.creation_flags(CREATE_NO_WINDOW); }
+        
+        let mut child = cmd.spawn()
             .map_err(|e| AdbError::ExecutionFailed(e.to_string()))?;
 
         use tokio::io::{AsyncBufReadExt, BufReader};
@@ -718,11 +734,16 @@ impl AdbCommand {
             args.push(path.clone());
         }
 
-        let mut child = tokio::process::Command::new(&self.adb_path)
-            .args(&args)
+        let mut cmd = tokio::process::Command::new(&self.adb_path);
+        cmd.args(&args)
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
+            .stderr(std::process::Stdio::piped());
+        
+        // 在 Windows 上设置 CREATE_NO_WINDOW 标志，防止 cmd 窗口弹出
+        #[cfg(target_os = "windows")]
+        { cmd.creation_flags(CREATE_NO_WINDOW); }
+        
+        let mut child = cmd.spawn()
             .map_err(|e| AdbError::ExecutionFailed(e.to_string()))?;
 
         use tokio::io::{AsyncBufReadExt, BufReader};
@@ -1164,9 +1185,14 @@ impl AdbCommand {
         eprintln!("[adb] +{} | {}", chrono::Local::now().format("%H:%M:%S%.3f"), cmd_str);
 
         let start = std::time::Instant::now();
-        let output = Command::new(&self.adb_path)
-            .args(args)
-            .output()
+        let mut cmd = Command::new(&self.adb_path);
+        cmd.args(args);
+        
+        // 在 Windows 上设置 CREATE_NO_WINDOW 标志，防止 cmd 窗口弹出
+        #[cfg(target_os = "windows")]
+        { cmd.creation_flags(CREATE_NO_WINDOW); }
+        
+        let output = cmd.output()
             .await
             .map_err(|e| {
                 eprintln!("[adb] -{} | {} FAILED after {}ms", chrono::Local::now().format("%H:%M:%S%.3f"), cmd_str, start.elapsed().as_millis());
@@ -1207,9 +1233,14 @@ impl AdbCommand {
         let _ = std::fs::create_dir_all(&local_dir);
 
         // 步骤1：设备端截图
-        let output = Command::new(&self.adb_path)
-            .args(["-s", serial, "shell", "screencap", "-p", remote_file])
-            .output()
+        let mut cmd = Command::new(&self.adb_path);
+        cmd.args(["-s", serial, "shell", "screencap", "-p", remote_file]);
+        
+        // 在 Windows 上设置 CREATE_NO_WINDOW 标志，防止 cmd 窗口弹出
+        #[cfg(target_os = "windows")]
+        { cmd.creation_flags(CREATE_NO_WINDOW); }
+        
+        let output = cmd.output()
             .await
             .map_err(|e| AdbError::ExecutionFailed(format!("截图失败: {}", e)))?;
 
@@ -1220,9 +1251,14 @@ impl AdbCommand {
         }
 
         // 步骤2：adb pull 到本地
-        let pull_output = Command::new(&self.adb_path)
-            .args(["-s", serial, "pull", remote_file, local_file.to_str().unwrap_or("/tmp/sc.png")])
-            .output()
+        let mut cmd = Command::new(&self.adb_path);
+        cmd.args(["-s", serial, "pull", remote_file, local_file.to_str().unwrap_or("/tmp/sc.png")]);
+        
+        // 在 Windows 上设置 CREATE_NO_WINDOW 标志，防止 cmd 窗口弹出
+        #[cfg(target_os = "windows")]
+        { cmd.creation_flags(CREATE_NO_WINDOW); }
+        
+        let pull_output = cmd.output()
             .await
             .map_err(|e| AdbError::ExecutionFailed(format!("pull 失败: {}", e)))?;
 
@@ -1237,9 +1273,14 @@ impl AdbCommand {
             .map_err(|e| AdbError::ExecutionFailed(format!("读取本地文件失败: {}", e)))?;
 
         // 清理设备端文件
-        let _ = Command::new(&self.adb_path)
-            .args(["-s", serial, "shell", "rm", "-f", remote_file])
-            .spawn();
+        let mut cmd = Command::new(&self.adb_path);
+        cmd.args(["-s", serial, "shell", "rm", "-f", remote_file]);
+        
+        // 在 Windows 上设置 CREATE_NO_WINDOW 标志，防止 cmd 窗口弹出
+        #[cfg(target_os = "windows")]
+        { cmd.creation_flags(CREATE_NO_WINDOW); }
+        
+        let _ = cmd.spawn();
 
         if data.is_empty() {
             return Err(AdbError::ExecutionFailed("截图返回空数据".to_string()));
@@ -1280,11 +1321,16 @@ impl AdbCommand {
         };
 
         eprintln!("[stream_screenrecord] Starting recorder: {}", rec_cmd);
-        let _ = Command::new(&self.adb_path)
-            .args(&["-s", serial, "shell", &rec_cmd])
+        let mut cmd = Command::new(&self.adb_path);
+        cmd.args(&["-s", serial, "shell", &rec_cmd])
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
+            .stderr(std::process::Stdio::null());
+        
+        // 在 Windows 上设置 CREATE_NO_WINDOW 标志，防止 cmd 窗口弹出
+        #[cfg(target_os = "windows")]
+        { cmd.creation_flags(CREATE_NO_WINDOW); }
+        
+        let _ = cmd.spawn()
             .map_err(|e| AdbError::ExecutionFailed(format!("启动 screenrecord 失败: {}", e)))?;
 
         // 等待 screenrecord 启动并写入文件头（MP4 文件头约 32 bytes）
@@ -1305,11 +1351,16 @@ impl AdbCommand {
         // 用 tail -f 实时读取文件内容
         let tail_cmd = format!("tail -c +0 -f {}", remote_file);
         eprintln!("[stream_screenrecord] Starting tail: {}", tail_cmd);
-        let child = Command::new(&self.adb_path)
-            .args(&["-s", serial, "exec-out", &tail_cmd])
+        let mut cmd = Command::new(&self.adb_path);
+        cmd.args(&["-s", serial, "exec-out", &tail_cmd])
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
+            .stderr(std::process::Stdio::piped());
+        
+        // 在 Windows 上设置 CREATE_NO_WINDOW 标志，防止 cmd 窗口弹出
+        #[cfg(target_os = "windows")]
+        { cmd.creation_flags(CREATE_NO_WINDOW); }
+        
+        let child = cmd.spawn()
             .map_err(|e| AdbError::ExecutionFailed(format!("启动 tail 失败: {}", e)))?;
 
         eprintln!("[stream_screenrecord] Process spawned");
@@ -1345,9 +1396,16 @@ impl AdbCommand {
             vec!["-s", serial, "shell", cmd]
         };
 
+        let mut cmd = Command::new(&self.adb_path);
+        cmd.args(&args);
+        
+        // 在 Windows 上设置 CREATE_NO_WINDOW 标志，防止 cmd 窗口弹出
+        #[cfg(target_os = "windows")]
+        { cmd.creation_flags(CREATE_NO_WINDOW); }
+        
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(30),
-            Command::new(&self.adb_path).args(&args).output()
+            cmd.output()
         ).await;
 
         match result {
@@ -2373,9 +2431,14 @@ for s in strings:
         eprintln!("[adb] +{} | {}", chrono::Local::now().format("%H:%M:%S%.3f"), cmd_str);
 
         let start = std::time::Instant::now();
-        let output = tokio::process::Command::new(&self.adb_path)
-            .args(&args)
-            .output()
+        let mut cmd = tokio::process::Command::new(&self.adb_path);
+        cmd.args(&args);
+        
+        // 在 Windows 上设置 CREATE_NO_WINDOW 标志，防止 cmd 窗口弹出
+        #[cfg(target_os = "windows")]
+        { cmd.creation_flags(CREATE_NO_WINDOW); }
+        
+        let output = cmd.output()
             .await
             .map_err(|e| {
                 eprintln!("[adb] -{} | {} FAILED after {}ms", chrono::Local::now().format("%H:%M:%S%.3f"), cmd_str, start.elapsed().as_millis());
