@@ -15,6 +15,9 @@ use crate::state::AppState;
 /// 全局存储 bugreport 子进程，用于取消
 pub static BUGREPORT_CHILD: Mutex<Option<Child>> = Mutex::const_new(None);
 
+/// 全局存储日志流子进程，用于取消
+pub static LOGCAT_CHILD: Mutex<Option<Child>> = Mutex::const_new(None);
+
 /// 获取已连接的设备列表（轻量版，只获取基本信息，不调用 getprop）
 #[tauri::command]
 pub async fn get_devices(state: State<'_, AppState>) -> Result<Vec<AdbDevice>, String> {
@@ -806,11 +809,86 @@ pub async fn get_logcat(
     serial: String,
     lines: Option<u32>,
 ) -> Result<String, String> {
+    // 先检查是否为 HarmonyOS 设备
+    let hdc_path = state.get_hdc_path();
+    let hdc = crate::hdc::HdcCommand::new(&hdc_path);
+    if let Ok(devices) = hdc.devices().await {
+            if devices.iter().any(|d| d.serial == serial) {
+                // HarmonyOS 设备使用 hilog
+                let line_count = lines.unwrap_or(100);
+                let output = hdc.shell_command(&serial, &format!("hilog -z {}", line_count)).await
+                    .map_err(|e| e.to_string())?;
+                return Ok(output);
+            }
+        }
+
+    // Android 设备使用 logcat
     let adb_path = state.get_adb_path();
     let adb = AdbCommand::new(&adb_path);
 
     let line_count = lines.unwrap_or(100);
     adb.logcat(&serial, line_count).await.map_err(|e| e.to_string())
+}
+
+/// 启动实时日志流
+#[tauri::command]
+pub async fn start_logcat_stream(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    serial: String,
+) -> Result<(), String> {
+    // 先停止之前的日志流
+    stop_logcat_stream().await?;
+
+    // 检查是否为 HarmonyOS 设备
+    let hdc_path = state.get_hdc_path();
+    let hdc = crate::hdc::HdcCommand::new(&hdc_path);
+    if let Ok(devices) = hdc.devices().await {
+        if devices.iter().any(|d| d.serial == serial) {
+            // HarmonyOS 设备使用 hilog -x
+            let child = hdc.start_logcat_stream(&serial).await.map_err(|e| e.to_string())?;
+            
+            // 存储子进程
+            let mut logcat_child = LOGCAT_CHILD.lock().await;
+            *logcat_child = Some(child);
+            drop(logcat_child);
+
+            // 读取日志流
+            tokio::spawn(async move {
+                let child = {
+                    let mut logcat_child = LOGCAT_CHILD.lock().await;
+                    logcat_child.take()
+                };
+
+                if let Some(mut child) = child {
+                    let stdout = child.stdout.take().unwrap();
+                    let reader = tokio::io::BufReader::new(stdout);
+                    let mut lines = tokio::io::AsyncBufReadExt::lines(reader);
+
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        // 发送日志事件
+                        let _ = app.emit("log-output", crate::events::LogOutput { line });
+                    }
+                }
+            });
+
+            return Ok(());
+        }
+    }
+
+    // Android 设备暂不支持实时日志流
+    Ok(())
+}
+
+/// 停止实时日志流
+#[tauri::command]
+pub async fn stop_logcat_stream() -> Result<(), String> {
+    let mut logcat_child = LOGCAT_CHILD.lock().await;
+    if let Some(mut child) = logcat_child.take() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    Ok(())
 }
 
 /// 获取性能信息（CPU、内存、电池、存储）
@@ -924,7 +1002,7 @@ pub async fn get_file_list(
     adb.get_file_list(&serial, &path).await.map_err(|e| e.to_string())
 }
 
-/// 解析本地 APK 文件信息（支持 .apk / .xapk / .apks / .apkm）
+/// 解析本地 APK 文件信息（支持 .apk / .xapk / .apks / .apkm / .hap）
 #[tauri::command]
 pub async fn parse_apk_info(state: State<'_, AppState>, file_path: String) -> Result<ApkInfo, String> {
     let adb_path = state.get_adb_path();
@@ -975,7 +1053,7 @@ pub async fn parse_apk_info(state: State<'_, AppState>, file_path: String) -> Re
         return result.map_err(|e| e.to_string());
     }
 
-    // 普通 .apk 格式
+    // 普通 .apk 或 .hap 格式
     let result = adb.parse_apk_info_local(&file_path).await;
     match &result {
         Ok(info) => {
@@ -1088,6 +1166,15 @@ pub async fn get_adb_version(state: State<'_, AppState>) -> Result<String, Strin
     let adb = AdbCommand::new(&adb_path);
 
     adb.get_version().await.map_err(|e| e.to_string())
+}
+
+/// 获取 HDC 版本
+#[tauri::command]
+pub async fn get_hdc_version(state: State<'_, AppState>) -> Result<String, String> {
+    let hdc_path = state.get_hdc_path();
+    let hdc = crate::hdc::HdcCommand::new(&hdc_path);
+
+    hdc.get_version().await.map_err(|e| e.to_string())
 }
 
 /// 启用 WiFi ADB
@@ -1941,6 +2028,22 @@ pub async fn hdc_uninstall_app(state: State<'_, AppState>, serial: String, packa
     hdc.uninstall(&serial, &package).await.map_err(|e| e.to_string())
 }
 
+/// HDC 清除应用缓存数据
+#[tauri::command]
+pub async fn hdc_clear_cache(state: State<'_, AppState>, serial: String, package: String) -> Result<String, String> {
+    let hdc_path = state.get_hdc_path();
+    let hdc = crate::hdc::HdcCommand::new(&hdc_path);
+    hdc.clear_cache(&serial, &package).await.map_err(|e| e.to_string())
+}
+
+/// HDC 清除应用用户数据
+#[tauri::command]
+pub async fn hdc_clear_data(state: State<'_, AppState>, serial: String, package: String) -> Result<String, String> {
+    let hdc_path = state.get_hdc_path();
+    let hdc = crate::hdc::HdcCommand::new(&hdc_path);
+    hdc.clear_data(&serial, &package).await.map_err(|e| e.to_string())
+}
+
 /// HDC 获取已安装应用列表
 #[tauri::command]
 pub async fn hdc_get_installed_apps(state: State<'_, AppState>, serial: String) -> Result<Vec<serde_json::Value>, String> {
@@ -1954,9 +2057,9 @@ pub async fn hdc_get_installed_apps(state: State<'_, AppState>, serial: String) 
     Ok(values)
 }
 
-/// HDC 快速获取应用列表（仅包名）
+/// HDC 快速获取应用列表（包名和应用名称）
 #[tauri::command]
-pub async fn hdc_get_app_list(state: State<'_, AppState>, serial: String) -> Result<Vec<String>, String> {
+pub async fn hdc_get_app_list(state: State<'_, AppState>, serial: String) -> Result<Vec<serde_json::Value>, String> {
     let hdc_path = state.get_hdc_path();
     let hdc = crate::hdc::HdcCommand::new(&hdc_path);
     hdc.get_installed_apps_list(&serial).await.map_err(|e| e.to_string())
@@ -2214,6 +2317,24 @@ pub async fn hdc_pull_file(state: State<'_, AppState>, serial: String, remote_pa
     let hdc_path = state.get_hdc_path();
     let hdc = crate::hdc::HdcCommand::new(&hdc_path);
     hdc.pull_file(&serial, &remote_path, &local_path).await.map_err(|e| e.to_string())
+}
+
+/// HDC 获取文件列表
+#[tauri::command]
+pub async fn hdc_get_file_list(state: State<'_, AppState>, serial: String, path: String) -> Result<Vec<crate::hdc::HdcFileInfo>, String> {
+    let hdc_path = state.get_hdc_path();
+    let hdc = crate::hdc::HdcCommand::new(&hdc_path);
+    hdc.get_file_list(&serial, &path).await.map_err(|e| e.to_string())
+}
+
+/// HDC 批量检查路径权限
+#[tauri::command]
+pub async fn hdc_check_paths_permission(state: State<'_, AppState>, serial: String, paths: Vec<String>) -> Result<std::collections::HashMap<String, String>, String> {
+    let hdc_path = state.get_hdc_path();
+    let hdc = crate::hdc::HdcCommand::new(&hdc_path);
+    // 将 Vec<String> 转换为 &[&str]
+    let path_refs: Vec<&str> = paths.iter().map(|s| s.as_str()).collect();
+    hdc.check_paths_permission(&serial, &path_refs).await.map_err(|e| e.to_string())
 }
 
 /// HDC 获取设备信息

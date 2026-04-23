@@ -13,9 +13,12 @@ interface AppsStore {
   viewMode: "grid" | "list";
   selectedApp: InstalledApp | null;
   fetchApps: (serial: string) => Promise<void>;
+  fetchAppDetail: (serial: string, packageName: string) => Promise<void>;
   launchApp: (serial: string, pkg: string) => Promise<void>;
   uninstallApp: (serial: string, pkg: string) => Promise<void>;
   clearData: (serial: string, pkg: string) => Promise<void>;
+  clearCache: (serial: string, pkg: string) => Promise<void>;
+  clearUserData: (serial: string, pkg: string) => Promise<void>;
   setSearchQuery: (q: string) => void;
   setFilterType: (t: "all" | "system" | "third_party") => void;
   setSortBy: (s: "name" | "size" | "date") => void;
@@ -40,72 +43,66 @@ export const useAppsStore = create<AppsStore>((set, get) => ({
       const platform = devices.find((d) => d.serial === serial)?.platform || "android";
 
       if (platform === "harmonyos") {
-        // ===== 鸿蒙：两阶段加载 =====
-        // 阶段1：快速获取包名列表
-        const packages = await adbApi.hdcGetAppList(serial);
-        const initialApps: InstalledApp[] = packages.map((pkg) => ({
-          package_name: pkg,
-          app_name: pkg.split(".").pop() || pkg,
+        // ===== 鸿蒙：仅获取包名和应用名称 =====
+        const appList = await adbApi.hdcGetAppList(serial);
+        const initialApps: InstalledApp[] = appList.map((app) => ({
+          package_name: app.bundleName,
+          app_name: app.label || app.bundleName.split(".").pop() || app.bundleName,
           version_name: "",
           version_code: "",
           icon_base64: null,
           install_time: "",
           app_size: "",
-          is_system: false,
+          is_system: app.bundleName.startsWith("com.huawei"),
         }));
         set({ apps: initialApps, isLoading: false });
-
-        // 阶段2：批量获取详情（合并为一条命令）
-        if (packages.length > 0) {
-          // 分批处理，每批最多 50 个包（避免单条命令过长）
-          const BATCH_SIZE = 50;
-          for (let i = 0; i < packages.length; i += BATCH_SIZE) {
-            const batch = packages.slice(i, i + BATCH_SIZE);
-            try {
-              const details = await adbApi.hdcGetAppsDetailsBatch(serial, batch);
-              set((state) => ({
-                apps: state.apps.map((a) => {
-                  const detail = details.find((d: any) => d.package_name === a.package_name);
-                  return detail ? { ...a, ...detail } : a;
-                }),
-              }));
-            } catch {
-              // 批量失败不影响已加载的数据
-            }
-          }
-        }
       } else {
-        // ===== Android：两阶段加载 =====
-        // 阶段1：快速获取包名列表
+        // ===== Android：快速获取包名列表 =====
         const apps = await adbApi.getInstalledApps(serial, true);
         set({ apps, isLoading: false });
-
-        // 阶段2：批量获取详情（合并为一条命令）
-        const needDetail = apps.filter((a) => !a.version_name);
-        if (needDetail.length > 0) {
-          const packages = needDetail.map((a) => a.package_name);
-          // 分批处理，每批最多 50 个包
-          const BATCH_SIZE = 50;
-          for (let i = 0; i < packages.length; i += BATCH_SIZE) {
-            const batch = packages.slice(i, i + BATCH_SIZE);
-            try {
-              const details = await adbApi.getAppsDetailsBatch(serial, batch);
-              set((state) => ({
-                apps: state.apps.map((a) => {
-                  const detail = details.find((d) => d.package_name === a.package_name);
-                  return detail ? { ...a, ...detail } : a;
-                }),
-              }));
-            } catch {
-              // 批量失败不影响已加载的数据
-            }
-          }
-        }
       }
     } catch (err) {
       set({
         error: err instanceof Error ? err.message : "Failed to fetch apps",
         isLoading: false,
+      });
+    }
+  },
+
+  fetchAppDetail: async (serial: string, packageName: string) => {
+    try {
+      const devices = useDeviceStore.getState().devices;
+      const platform = devices.find((d) => d.serial === serial)?.platform || "android";
+
+      let detail;
+      if (platform === "harmonyos") {
+        detail = await adbApi.hdcGetAppDetail(serial, packageName);
+      } else {
+        detail = await adbApi.getAppDetails(serial, packageName);
+      }
+
+      // 使用 set 回调中的 state 获取当前应用列表，确保获取到最新状态
+      set((state) => {
+        const existingApp = state.apps.find((a) => a.package_name === packageName);
+        // 确保保留原有的应用名称，即使 API 返回了 app_name 字段
+        // 因为列表中的应用名称是从 bm dump -a -l 获取的，包含了正确的应用名称
+        const updatedDetail = {
+          ...detail,
+          app_name: existingApp?.app_name || detail.app_name || detail.package_name
+        };
+        return {
+          apps: state.apps.map((a) => {
+            if (a.package_name === packageName) {
+              return { ...a, ...updatedDetail };
+            }
+            return a;
+          }),
+          selectedApp: updatedDetail,
+        };
+      });
+    } catch (err) {
+      set({
+        error: err instanceof Error ? err.message : "Failed to fetch app detail",
       });
     }
   },
@@ -153,6 +150,38 @@ export const useAppsStore = create<AppsStore>((set, get) => ({
     } catch (err) {
       set({
         error: err instanceof Error ? err.message : "Failed to clear app data",
+      });
+    }
+  },
+
+  clearCache: async (serial: string, pkg: string) => {
+    try {
+      const devices = useDeviceStore.getState().devices;
+      const platform = devices.find((d) => d.serial === serial)?.platform || "android";
+      if (platform === "harmonyos") {
+        await adbApi.hdcClearCache(serial, pkg);
+      } else {
+        await adbApi.clearAppData(serial, pkg);
+      }
+    } catch (err) {
+      set({
+        error: err instanceof Error ? err.message : "Failed to clear app cache",
+      });
+    }
+  },
+
+  clearUserData: async (serial: string, pkg: string) => {
+    try {
+      const devices = useDeviceStore.getState().devices;
+      const platform = devices.find((d) => d.serial === serial)?.platform || "android";
+      if (platform === "harmonyos") {
+        await adbApi.hdcClearData(serial, pkg);
+      } else {
+        await adbApi.clearAppData(serial, pkg);
+      }
+    } catch (err) {
+      set({
+        error: err instanceof Error ? err.message : "Failed to clear user data",
       });
     }
   },

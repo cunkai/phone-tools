@@ -175,7 +175,7 @@ const DeviceSelector: React.FC = () => {
           />
           <span className="text-sm text-dark-200 truncate flex-1 text-left">
             {currentDeviceData && (currentDeviceData.status === "device" || currentDeviceData.status === "Connected" || currentDeviceData.status === "Ready")
-              ? `${homeCache[currentDevice!]?.marketName || (currentDeviceData as any).market_name || `${currentDeviceData.brand || ""} ${currentDeviceData.model || ""}`.trim() || currentDeviceData.serial} (${currentDeviceData.serial})`
+              ? `${homeCache[currentDevice!]?.marketName || (currentDeviceData as any).market_name || `${currentDeviceData.brand || ""} ${currentDeviceData.model || ""}`.trim() || currentDeviceData.serial}`
               : t("device.noDevice")}
           </span>
           <svg
@@ -311,16 +311,16 @@ const DeviceSelector: React.FC = () => {
                         <div className="text-xs text-dark-200 truncate">{item.marketName || item.ip}</div>
                         <div className="text-[10px] text-dark-500">{item.ip}:{item.port}</div>
                       </div>
-                      <button
-                        onClick={(e) => handleDeleteHistory(e, item)}
-                        className="opacity-0 group-hover:opacity-100 text-dark-500 hover:text-red-400 transition-all p-0.5"
-                        title={t("common.delete")}
-                      >
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                          <line x1="18" y1="6" x2="6" y2="18" />
-                          <line x1="6" y1="6" x2="18" y2="18" />
-                        </svg>
-                      </button>
+                      <div
+                      onClick={(e) => handleDeleteHistory(e, item)}
+                      className="opacity-0 group-hover:opacity-100 text-dark-500 hover:text-red-400 transition-all p-0.5 cursor-pointer"
+                      title={t("common.delete")}
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <line x1="18" y1="6" x2="6" y2="18" />
+                        <line x1="6" y1="6" x2="18" y2="18" />
+                      </svg>
+                    </div>
                     </button>
                   ))
                 )}

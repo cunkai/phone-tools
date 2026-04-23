@@ -2,8 +2,21 @@
 
 /** 屏幕坐标点 */
 export interface Point {
-  x: number;
-  y: number;
+  x: number | string;
+  y: number | string;
+  /** 坐标类型：fixed（固定坐标）、random_rect（矩形随机）、random_circle（圆形随机）、custom（自定义随机） */
+  type?: 'fixed' | 'random_rect' | 'random_circle' | 'custom';
+  /** 矩形随机参数 */
+  rectParams?: {
+    width: number;
+    height: number;
+  };
+  /** 圆形随机参数 */
+  circleParams?: {
+    radius: number;
+  };
+  /** 自定义随机代码 */
+  customCode?: string;
 }
 
 /** RGBA 颜色值 */
@@ -61,10 +74,24 @@ export type ActionParams =
       target: Point;          // 检测的像素坐标
       expected: Color;        // 期望颜色
       tolerance?: number;     // 颜色容差(0-255)，默认30
+      toleranceR?: number;    // 红色通道容差(0-255)，默认30
+      toleranceG?: number;    // 绿色通道容差(0-255)，默认30
+      toleranceB?: number;    // 蓝色通道容差(0-255)，默认30
       timeout?: number;       // 超时时间(ms)，默认5000
       interval?: number;      // 检测间隔(ms)，默认500
       on_match?: ActionBlock[];   // 匹配时执行（可选，不填则继续下一步）
       on_fail?: ActionBlock[];    // 不匹配时执行（可选，不填则跳过）
+    }}
+  | { code: {                                  // 代码组件（TypeScript）
+      content: string;        // TypeScript 代码内容
+      variables?: Array<{     // 全局变量定义
+        name: string;         // 变量名
+        source: {             // 变量来源
+          blockId: string;     // 来源块ID
+          property: string;    // 来源属性路径
+          type: string;        // 变量类型
+        };
+      }>;
     }};
 
 // ==================== ActionBlock 主类型 ====================
@@ -177,9 +204,11 @@ export type BackendAction = Omit<ActionBlock, 'id' | 'label' | 'disabled'>;
 /** execute_action 的返回值 */
 export interface ActionResult {
   success: boolean;
-  message?: string;
+  message?: string | string[];
   /** 条件判断时返回实际检测到的颜色 */
   actualColor?: Color;
   /** 条件判断时返回是否匹配 */
   matched?: boolean;
+  /** 代码块的返回值 */
+  returnValue?: any;
 }

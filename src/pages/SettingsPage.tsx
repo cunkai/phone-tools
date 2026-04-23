@@ -1,16 +1,26 @@
 import React, { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { open } from "@tauri-apps/plugin-dialog";
-import { checkHdcAvailable, getHdcPath, setHdcPath } from "../api/adb";
+import { invoke } from "@tauri-apps/api/core";
+import { checkHdcAvailable, getHdcPath, setHdcPath, checkAdbAvailable, getAdbVersion, getHdcVersion } from "../api/adb";
 import ConnectionGuide from "../components/ConnectionGuide";
+import { useAppStore } from "../store/appStore";
 
 const SettingsPage: React.FC = () => {
   const { t, i18n } = useTranslation();
+  const { theme, setTheme } = useAppStore();
   const [showGuide, setShowGuide] = useState(false);
   const [saved, setSaved] = useState(false);
+  // ADB 路径
+  const [adbPath, setAdbPathState] = useState("");
+  const [adbAvailable, setAdbAvailable] = useState<boolean | null>(null);
+  const [adbChecking, setAdbChecking] = useState(false);
+  const [adbVersion, setAdbVersion] = useState("");
+  // HDC 路径
   const [hdcPath, setHdcPathState] = useState("");
   const [hdcAvailable, setHdcAvailable] = useState<boolean | null>(null);
   const [hdcChecking, setHdcChecking] = useState(false);
+  const [hdcVersion, setHdcVersion] = useState("");
 
   const changeLanguage = (lang: string) => {
     i18n.changeLanguage(lang);
@@ -23,20 +33,60 @@ const SettingsPage: React.FC = () => {
     setTimeout(() => setSaved(false), 2000);
   };
 
-  // HDC 初始化
+  // 工具路径初始化
   useEffect(() => {
-    const initHdc = async () => {
+    const initTools = async () => {
+      // 初始化 ADB 路径
       try {
-        const path = await getHdcPath();
-        setHdcPathState(path);
-        const available = await checkHdcAvailable();
-        setHdcAvailable(available);
+        const adbPath = await invoke<string>("get_adb_path");
+        setAdbPathState(adbPath);
+        const adbAvailable = await checkAdbAvailable();
+        setAdbAvailable(adbAvailable);
+        if (adbAvailable) {
+          const version = await getAdbVersion();
+          setAdbVersion(version);
+        }
+      } catch {
+        setAdbAvailable(false);
+      }
+
+      // 初始化 HDC 路径
+      try {
+        const hdcPath = await getHdcPath();
+        setHdcPathState(hdcPath);
+        const hdcAvailable = await checkHdcAvailable();
+        setHdcAvailable(hdcAvailable);
+        if (hdcAvailable) {
+          const version = await getHdcVersion();
+          setHdcVersion(version);
+        }
       } catch {
         setHdcAvailable(false);
       }
     };
-    initHdc();
+    initTools();
   }, []);
+
+  const handleAdbPathChange = async (newPath: string) => {
+    setAdbPathState(newPath);
+    try {
+      await invoke<void>("set_adb_path", { path: newPath });
+      setAdbChecking(true);
+      const available = await checkAdbAvailable();
+      setAdbAvailable(available);
+      if (available) {
+        const version = await getAdbVersion();
+        setAdbVersion(version);
+      } else {
+        setAdbVersion("");
+      }
+    } catch {
+      setAdbAvailable(false);
+      setAdbVersion("");
+    } finally {
+      setAdbChecking(false);
+    }
+  };
 
   const handleHdcPathChange = async (newPath: string) => {
     setHdcPathState(newPath);
@@ -45,10 +95,32 @@ const SettingsPage: React.FC = () => {
       setHdcChecking(true);
       const available = await checkHdcAvailable();
       setHdcAvailable(available);
+      if (available) {
+        const version = await getHdcVersion();
+        setHdcVersion(version);
+      } else {
+        setHdcVersion("");
+      }
     } catch {
       setHdcAvailable(false);
+      setHdcVersion("");
     } finally {
       setHdcChecking(false);
+    }
+  };
+
+  const handleBrowseAdb = async () => {
+    try {
+      const selected = await open({
+        multiple: false,
+        filters: [{ name: "ADB Executable", extensions: ["exe", ""] }],
+      });
+      if (selected && typeof selected === "string") {
+        await handleAdbPathChange(selected);
+        showSaved();
+      }
+    } catch {
+      // user cancelled
     }
   };
 
@@ -118,13 +190,27 @@ const SettingsPage: React.FC = () => {
             {t("settings.theme")}
           </h3>
           <div className="flex gap-3">
-            <button className="flex-1 px-4 py-3 rounded-lg border border-accent-500 bg-accent-500/10 text-accent-400 text-sm transition-colors">
+            <button 
+              onClick={() => setTheme('dark')}
+              className={`flex-1 px-4 py-3 rounded-lg border text-sm transition-colors ${
+                theme === 'dark'
+                  ? 'border-accent-500 bg-accent-500/10 text-accent-400'
+                  : 'border-dark-600 bg-dark-700/50 text-dark-300 hover:border-dark-500'
+              }`}
+            >
               <span className="block font-medium">{t("settings.darkTheme")}</span>
               <span className="text-xs opacity-60 mt-0.5 block">Default</span>
             </button>
-            <button className="flex-1 px-4 py-3 rounded-lg border border-dark-600 bg-dark-700/50 text-dark-500 text-sm cursor-not-allowed">
+            <button 
+              onClick={() => setTheme('light')}
+              className={`flex-1 px-4 py-3 rounded-lg border text-sm transition-colors ${
+                theme === 'light'
+                  ? 'border-accent-500 bg-accent-500/10 text-accent-400'
+                  : 'border-dark-600 bg-dark-700/50 text-dark-300 hover:border-dark-500'
+              }`}
+            >
               <span className="block font-medium">{t("settings.lightTheme")}</span>
-              <span className="text-xs opacity-60 mt-0.5 block">Coming soon</span>
+              <span className="text-xs opacity-60 mt-0.5 block">White-Blue</span>
             </button>
           </div>
         </div>
@@ -146,39 +232,79 @@ const SettingsPage: React.FC = () => {
           </button>
         </div>
 
-        {/* HDC Path Configuration */}
+        {/* 调试工具目录 */}
         <div className="bg-dark-800/50 border border-dark-700/50 rounded-xl p-5">
           <h3 className="text-sm font-semibold text-dark-300 mb-4">
-            HDC (HarmonyOS Device Connector)
+            {t("settings.adbPath")}
           </h3>
-          <div className="space-y-4">
-            {/* HDC Status */}
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-dark-400">HDC Status</span>
-              <div className="flex items-center gap-2">
-                {hdcChecking && (
-                  <div className="w-2 h-2 bg-accent-500 rounded-full animate-pulse" />
-                )}
-                {hdcAvailable === true && (
-                  <span className="flex items-center gap-1.5 text-sm text-green-400">
-                    <div className="w-2 h-2 rounded-full bg-green-400" />
-                    Available
-                  </span>
-                )}
-                {hdcAvailable === false && (
-                  <span className="flex items-center gap-1.5 text-sm text-red-400">
-                    <div className="w-2 h-2 rounded-full bg-red-400" />
-                    Not Available
-                  </span>
-                )}
-                {hdcAvailable === null && !hdcChecking && (
-                  <span className="text-sm text-dark-500">Checking...</span>
-                )}
+          <div className="space-y-6">
+            {/* ADB 路径 */}
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-sm text-dark-400">ADB (Android Debug Bridge)</span>
+                <div className="flex items-center gap-2">
+                  {adbChecking && (
+                    <div className="w-2 h-2 bg-accent-500 rounded-full animate-pulse" />
+                  )}
+                  {adbAvailable === true && (
+                    <span className="flex items-center gap-1.5 text-sm text-green-400">
+                      <div className="w-2 h-2 rounded-full bg-green-400" />
+                      {t("common.success")}
+                    </span>
+                  )}
+                  {adbAvailable === false && (
+                    <span className="flex items-center gap-1.5 text-sm text-red-400">
+                      <div className="w-2 h-2 rounded-full bg-red-400" />
+                      {t("common.error")}
+                    </span>
+                  )}
+                  {adbAvailable === null && !adbChecking && (
+                    <span className="text-sm text-dark-500">{t("common.loading")}...</span>
+                  )}
+                </div>
+              </div>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={adbPath}
+                  onChange={(e) => handleAdbPathChange(e.target.value)}
+                  placeholder="adb or /path/to/adb"
+                  className="flex-1 px-3 py-2 bg-dark-900 border border-dark-700/50 rounded-lg text-sm text-dark-100 placeholder-dark-500 focus:outline-none focus:border-accent-500 transition-colors font-mono"
+                />
+                <button
+                  onClick={handleBrowseAdb}
+                  className="px-4 py-2 rounded-lg bg-dark-700 text-dark-300 hover:bg-dark-600 transition-colors text-sm whitespace-nowrap"
+                >
+                  {t("install.selectFile")}
+                </button>
               </div>
             </div>
-            {/* HDC Path Input */}
+
+            {/* HDC 路径 */}
             <div>
-              <label className="block text-xs text-dark-500 mb-1.5">HDC Path</label>
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-sm text-dark-400">HDC (HarmonyOS Device Connector)</span>
+                <div className="flex items-center gap-2">
+                  {hdcChecking && (
+                    <div className="w-2 h-2 bg-accent-500 rounded-full animate-pulse" />
+                  )}
+                  {hdcAvailable === true && (
+                    <span className="flex items-center gap-1.5 text-sm text-green-400">
+                      <div className="w-2 h-2 rounded-full bg-green-400" />
+                      {t("common.success")}
+                    </span>
+                  )}
+                  {hdcAvailable === false && (
+                    <span className="flex items-center gap-1.5 text-sm text-red-400">
+                      <div className="w-2 h-2 rounded-full bg-red-400" />
+                      {t("common.error")}
+                    </span>
+                  )}
+                  {hdcAvailable === null && !hdcChecking && (
+                    <span className="text-sm text-dark-500">{t("common.loading")}...</span>
+                  )}
+                </div>
+              </div>
               <div className="flex gap-2">
                 <input
                   type="text"
@@ -191,7 +317,7 @@ const SettingsPage: React.FC = () => {
                   onClick={handleBrowseHdc}
                   className="px-4 py-2 rounded-lg bg-dark-700 text-dark-300 hover:bg-dark-600 transition-colors text-sm whitespace-nowrap"
                 >
-                  Browse
+                  {t("install.selectFile")}
                 </button>
               </div>
             </div>
@@ -211,6 +337,14 @@ const SettingsPage: React.FC = () => {
             <div className="flex justify-between">
               <span className="text-sm text-dark-400">{t("settings.version")}</span>
               <span className="text-sm text-dark-300">1.0.0</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-sm text-dark-400">ADB</span>
+              <span className="text-sm text-dark-300">{adbVersion || "-"}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-sm text-dark-400">HDC</span>
+              <span className="text-sm text-dark-300">{hdcVersion || "-"}</span>
             </div>
             <div className="flex justify-between">
               <span className="text-sm text-dark-400">Tauri</span>

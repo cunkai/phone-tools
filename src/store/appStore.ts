@@ -8,6 +8,8 @@ interface AppStore {
   installProgress: number;
   installStatus: "idle" | "installing" | "success" | "error";
   installError: string | null;
+  theme: "dark" | "light";
+  setTheme: (theme: "dark" | "light") => void;
   parseApk: (path: string) => Promise<void>;
   installApp: (serial: string, path: string) => Promise<void>;
   resetInstall: () => void;
@@ -19,6 +21,11 @@ export const useAppStore = create<AppStore>((set, get) => ({
   installProgress: 0,
   installStatus: "idle",
   installError: null,
+  theme: "dark", // 默认深色主题
+  setTheme: (theme: "dark" | "light") => {
+    set({ theme });
+    localStorage.setItem("theme", theme);
+  },
 
   parseApk: async (path: string) => {
     set({ installStatus: "idle", installError: null });

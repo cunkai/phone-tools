@@ -107,6 +107,10 @@ pub struct HdcFileInfo {
     pub size: String,
     pub permissions: String,
     pub last_modified: String,
+    pub links: String,
+    pub owner: String,
+    pub group: String,
+    pub full_info: String,
 }
 
 /// HDC 应用详细信息
@@ -267,6 +271,20 @@ impl HdcCommand {
     /// `hdc -t serial uninstall package`
     pub async fn uninstall(&self, serial: &str, package: &str) -> HdcResult<String> {
         let output = self.execute(&["-t", serial, "uninstall", package]).await?;
+        Ok(output.trim().to_string())
+    }
+
+    /// 清除应用缓存数据
+    /// `hdc -t serial shell bm clean -c -n package`
+    pub async fn clear_cache(&self, serial: &str, package: &str) -> HdcResult<String> {
+        let output = self.execute(&["-t", serial, "shell", "bm", "clean", "-c", "-n", package]).await?;
+        Ok(output.trim().to_string())
+    }
+
+    /// 清除应用用户数据
+    /// `hdc -t serial shell bm clean -d -n package`
+    pub async fn clear_data(&self, serial: &str, package: &str) -> HdcResult<String> {
+        let output = self.execute(&["-t", serial, "shell", "bm", "clean", "-d", "-n", package]).await?;
         Ok(output.trim().to_string())
     }
 
@@ -472,21 +490,19 @@ impl HdcCommand {
         Ok(apps)
     }
 
-    /// 快速获取已安装应用列表（仅包名）
-    /// `hdc -t serial shell bm dump -a`
-    pub async fn get_installed_apps_list(&self, serial: &str) -> HdcResult<Vec<String>> {
+    /// 快速获取已安装应用列表（包名和应用名称）
+    /// `hdc -t serial shell bm dump -a -l`
+    pub async fn get_installed_apps_list(&self, serial: &str) -> HdcResult<Vec<serde_json::Value>> {
         let output = self
-            .execute(&["-t", serial, "shell", "bm", "dump", "-a"])
+            .execute(&["-t", serial, "shell", "bm", "dump", "-a", "-l"])
             .await?;
 
-        let packages: Vec<String> = output
-            .lines()
-            .map(|l| l.trim().to_string())
-            .filter(|l| !l.is_empty() && l.contains('.'))
-            .collect();
+        // 解析 JSON 输出
+        let apps: Vec<serde_json::Value> = serde_json::from_str(&output)
+            .map_err(|e| HdcError::ParseError(format!("解析 bm dump -a -l 输出失败: {}", e)))?;
 
-        eprintln!("[get_installed_apps_list] Found {} packages", packages.len());
-        Ok(packages)
+        eprintln!("[get_installed_apps_list] Found {} apps", apps.len());
+        Ok(apps)
     }
 
     /// 获取单个应用的详细信息
@@ -651,7 +667,11 @@ impl HdcCommand {
         let output = self
             .execute(&["-t", serial, "file", "send", local, remote])
             .await?;
-        Ok(output.trim().to_string())
+        let trimmed = output.trim();
+        if trimmed.contains("[Fail]") {
+            return Err(HdcError::ExecutionFailed(trimmed.to_string()));
+        }
+        Ok(trimmed.to_string())
     }
 
     /// 从设备拉取文件
@@ -660,7 +680,11 @@ impl HdcCommand {
         let output = self
             .execute(&["-t", serial, "file", "recv", remote, local])
             .await?;
-        Ok(output.trim().to_string())
+        let trimmed = output.trim();
+        if trimmed.contains("[Fail]") {
+            return Err(HdcError::ExecutionFailed(trimmed.to_string()));
+        }
+        Ok(trimmed.to_string())
     }
 
     /// 获取文件列表
@@ -670,43 +694,131 @@ impl HdcCommand {
             .shell_command(serial, &format!("ls -la {}", path))
             .await?;
 
+        // 检查输出是否包含错误信息
+        for line in output.lines() {
+            let line = line.trim();
+            if line.starts_with("ls:") && (line.contains("Permission denied") || line.contains("权限")) {
+                return Err(HdcError::ExecutionFailed(line.to_string()));
+            }
+        }
+
         let mut files = Vec::new();
 
-        for line in output.lines().skip(1) {
-            // 跳过 "total" 行
+        for line in output.lines() {
+            // 跳过 "total" 行和空行
             if line.starts_with("total") || line.trim().is_empty() {
                 continue;
             }
 
+            // 直接使用整行作为 full_info
+            let full_info = line.to_string();
+
+            // 提取权限字符串
+            let permissions = line.split_whitespace().next().unwrap_or("").to_string();
+            let is_directory = permissions.starts_with('d');
+
+            // 提取文件名（从第8个空格开始）
             let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() < 6 {
+            // 确保至少有8个部分（权限、链接数、所有者、组、大小、日期、时间、文件名）
+            let name = if parts.len() >= 8 {
+                // 从第8个部分开始，剩下的都是文件名
+                parts[7..].join(" ").to_string()
+            } else {
+                // 如果部分不足，尝试使用最后一个部分作为文件名
+                parts.last().unwrap_or(&"").to_string()
+            };
+            
+            // 跳过 . 和 .. 特殊目录
+            if name == "." || name == ".." {
                 continue;
             }
-
-            let permissions = parts[0].to_string();
-            let is_directory = permissions.starts_with('d');
-            let size = parts[4].parse::<u64>().unwrap_or(0);
-            let name = parts[parts.len() - 1].to_string();
+            
             let full_path = if path.ends_with('/') {
                 format!("{}{}", path, name)
             } else {
                 format!("{}/{}", path, name)
             };
 
-            // 解析日期（简化处理）
-            let last_modified = format!("{} {} {}", parts[5], parts[6], parts.get(7).unwrap_or(&""));
+            // 提取大小（第5个部分）
+            let size_str = line.split_whitespace().nth(4).unwrap_or("0").to_string();
+
+            // 提取修改时间（第6-8个部分）
+            let time_parts: Vec<&str> = line.split_whitespace().skip(5).take(3).collect();
+            let last_modified = time_parts.join(" ");
+
+            // 提取链接数、所有者、组
+            let links = line.split_whitespace().nth(1).unwrap_or("0").to_string();
+            let owner = line.split_whitespace().nth(2).unwrap_or("").to_string();
+            let group = line.split_whitespace().nth(3).unwrap_or("").to_string();
 
             files.push(HdcFileInfo {
                 name,
                 path: full_path,
                 is_directory,
-                size: crate::utils::format_file_size(size),
+                size: size_str,
                 permissions,
                 last_modified,
+                links,
+                owner,
+                group,
+                full_info,
             });
         }
 
         Ok(files)
+    }
+
+    /// 批量检查路径权限
+    /// `hdc -t serial shell stat -c "%n : %A (%a)" path1 path2 path3`
+    pub async fn check_paths_permission(&self, serial: &str, paths: &[&str]) -> HdcResult<HashMap<String, String>> {
+        if paths.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let paths_str = paths.join(" ");
+        let output = self
+            .shell_command(serial, &format!("stat -c \"%n : %A (%a)\" {}", paths_str))
+            .await?;
+
+        let mut result = HashMap::new();
+
+        // 解析 stat 输出，格式为 "路径 : drwxrwxrwx (777)"
+        for line in output.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+
+            // 检查是否是权限错误信息（stat 也会输出错误）
+            if line.starts_with("stat:") && (line.contains("Permission denied") || line.contains("权限")) {
+                // 提取路径
+                if let Some(colon_pos) = line.find(':') {
+                    let path_part = &line[colon_pos + 1..].trim();
+                    // 移除末尾的冒号和错误信息
+                    let path = path_part.split(|c| c == ':' || c == ' ').next().unwrap_or("").trim();
+                    if !path.is_empty() {
+                        result.insert(path.to_string(), "Permission denied".to_string());
+                    }
+                }
+                continue;
+            }
+
+            // 解析正常的 stat 输出
+            if let Some(colon_pos) = line.find(" : ") {
+                let path = line[..colon_pos].trim();
+                let permissions_part = &line[colon_pos + 3..];
+                result.insert(path.to_string(), permissions_part.to_string());
+            }
+        }
+
+        // 确保所有输入路径都在结果中，默认有执行权限
+        for path in paths {
+            if !result.contains_key(*path) {
+                result.insert(path.to_string(), "Permission denied".to_string());
+            }
+        }
+
+        Ok(result)
     }
 
     // ==================== Shell ====================
@@ -1361,6 +1473,27 @@ impl HdcCommand {
         Ok(output)
     }
 
+    /// 启动实时日志流
+    /// `hdc -t serial shell hilog -x`
+    pub async fn start_logcat_stream(&self, serial: &str) -> HdcResult<tokio::process::Child> {
+        let args = &["-t", serial, "shell", "hilog", "-x"];
+        let cmd_str = args.join(" ");
+        eprintln!("[hdc] +{} | {:?}", chrono::Local::now().format("%H:%M:%S%.3f"), cmd_str);
+
+        let child = tokio::process::Command::new(&self.hdc_path)
+            .args(args)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| {
+                eprintln!("[hdc] -{} | {:?} FAILED", chrono::Local::now().format("%H:%M:%S%.3f"), cmd_str);
+                HdcError::ExecutionFailed(format!("启动 hilog 流失败: {}", e))
+            })?;
+        
+        eprintln!("[hdc] -{} | {:?} OK (started stream)", chrono::Local::now().format("%H:%M:%S%.3f"), cmd_str);
+        Ok(child)
+    }
+
     // ==================== 工具方法 ====================
 
     /// 检查 HDC 是否可用
@@ -1370,7 +1503,15 @@ impl HdcCommand {
 
     /// 获取 HDC 版本
     pub async fn get_version(&self) -> HdcResult<String> {
-        let output = self.execute(&["version"]).await?;
+        let output = self.execute_fast(&["-v"]).await?;
+        // 从输出中提取版本号，格式：HDC version 1.0.0.0 或类似格式
+        for line in output.trim().lines() {
+            if let Some(version_part) = line.split_whitespace().nth(1) {
+                if version_part.contains('.') {
+                    return Ok(version_part.to_string());
+                }
+            }
+        }
         Ok(output.trim().to_string())
     }
 

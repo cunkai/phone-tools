@@ -2,11 +2,12 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { useDeviceStore } from "../store/deviceStore";
 import LoadingSpinner from "../components/LoadingSpinner";
-import { takeScreenshot, getFileList, getLogcat, hdcScreenshot } from "../api/adb";
+import { takeScreenshot, getFileList, getLogcat, startLogcatStream, stopLogcatStream, hdcScreenshot, executeShell, hdcShell, hdcGetFileList, hdcPullFile, hdcPushFile, hdcCheckPathsPermission } from "../api/adb";
 import { onLogOutput } from "../api/events";
-import type { FileInfo } from "../types";
+import type { FileInfo, HdcFileInfo } from "../types";
+import { open, save } from "@tauri-apps/plugin-dialog";
 
-type ToolTab = "screenshot" | "filemanager" | "logcat";
+type ToolTab = "screenshot" | "filemanager" | "logcat" | "proxy";
 
 // Screenshot history stored in localStorage
 const SCREENSHOT_HISTORY_KEY = "screenshot_history";
@@ -52,11 +53,23 @@ const ToolsPage: React.FC = () => {
   const { currentDevice, devices, fetchDevices } = useDeviceStore();
   const [activeTab, setActiveTab] = useState<ToolTab>("screenshot");
 
+  // 判断当前设备是否为 HarmonyOS 设备
+  const isHarmonyOS = currentDevice
+    ? devices.find((d) => d.serial === currentDevice)?.platform === "harmonyos"
+    : false;
+
+  // 过滤掉 HarmonyOS 设备不支持的功能
   const tabs: { key: ToolTab; labelKey: string }[] = [
-    { key: "screenshot", labelKey: "tools.screenshot" },
-    { key: "filemanager", labelKey: "tools.fileManager" },
-    { key: "logcat", labelKey: "tools.logcat" },
+    { key: "screenshot" as ToolTab, labelKey: "tools.screenshot" },
+    { key: "filemanager" as ToolTab, labelKey: "tools.fileManager" },
+    { key: "logcat" as ToolTab, labelKey: "tools.logcat" },
+    { key: "proxy" as ToolTab, labelKey: "tools.proxy" },
   ];
+
+  // 如果当前选中的 tab 被隐藏了，自动切换到第一个 tab
+  useEffect(() => {
+    // 不再需要特殊处理鸿蒙设备，filemanager 现在支持鸿蒙
+  }, [isHarmonyOS, activeTab]);
 
   return (
     <div className="p-6 h-full flex flex-col animate-fade-in">
@@ -83,6 +96,7 @@ const ToolsPage: React.FC = () => {
         {activeTab === "screenshot" && <ScreenshotTab />}
         {activeTab === "filemanager" && <FileManagerTab />}
         {activeTab === "logcat" && <LogcatTab />}
+        {activeTab === "proxy" && <ProxyTab />}
       </div>
     </div>
   );
@@ -239,14 +253,21 @@ const ScreenshotTab: React.FC = () => {
 
 const FileManagerTab: React.FC = () => {
   const { t } = useTranslation();
-  const { currentDevice } = useDeviceStore();
-  const [files, setFiles] = useState<FileInfo[]>([]);
-  const [currentPath, setCurrentPath] = useState("/");
+  const { currentDevice, devices } = useDeviceStore();
+  const [files, setFiles] = useState<(FileInfo | HdcFileInfo)[]>([]);
+  const [currentPath, setCurrentPath] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isEditing, setIsEditing] = useState(false);
   const [editValue, setEditValue] = useState("");
+  const [downloading, setDownloading] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const pathInputRef = useRef<HTMLInputElement>(null);
+
+  // 判断当前设备是否为 HarmonyOS 设备
+  const isHarmonyOS = currentDevice
+    ? devices.find((d) => d.serial === currentDevice)?.platform === "harmonyos"
+    : false;
 
   const loadFiles = useCallback(
     async (path: string) => {
@@ -254,23 +275,45 @@ const FileManagerTab: React.FC = () => {
       setLoading(true);
       setError(null);
       try {
-        const fileList = await getFileList(currentDevice, path);
+        let fileList: (FileInfo | HdcFileInfo)[];
+        if (isHarmonyOS) {
+          fileList = await hdcGetFileList(currentDevice, path);
+        } else {
+          fileList = await getFileList(currentDevice, path);
+        }
         setFiles(fileList);
         setCurrentPath(path);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to load files");
+      } catch (err: any) {
+        // 处理权限错误
+        console.error("Load files error:", err);
+        let errorMessage = "Failed to load files";
+        if (err.message) {
+          errorMessage = err.message;
+        } else if (typeof err === "string") {
+          errorMessage = err;
+        }
+        console.error("Error message:", errorMessage);
+        // 即使遇到错误，也要更新当前路径，这样用户可以看到他们尝试访问的路径
+        setCurrentPath(path);
+        if (errorMessage.includes("permission denied") || errorMessage.includes("Permission denied") || errorMessage.includes("权限")) {
+          setError(t("tools.fetchFilesError", { error: t("tools.permissionDenied") }));
+        } else {
+          setError(t("tools.fetchFilesError", { error: errorMessage }));
+        }
       } finally {
         setLoading(false);
       }
     },
-    [currentDevice]
+    [currentDevice, isHarmonyOS, t]
   );
 
   useEffect(() => {
     if (currentDevice) {
-      loadFiles("/");
+      // 鸿蒙设备默认从 Photo 目录开始
+      const initialPath = isHarmonyOS ? "/mnt/data/100/media_fuse/Photo" : "/";
+      loadFiles(initialPath);
     }
-  }, [currentDevice, loadFiles]);
+  }, [currentDevice, isHarmonyOS, loadFiles]);
 
   const navigateTo = (path: string) => {
     loadFiles(path);
@@ -300,6 +343,69 @@ const FileManagerTab: React.FC = () => {
     }
   };
 
+  const handleDownload = async (file: FileInfo | HdcFileInfo) => {
+    if (!currentDevice || file.is_directory) return;
+    setDownloading(true);
+    setError(null);
+    const startTime = Date.now();
+    try {
+      const savePath = await save({
+        defaultPath: file.name,
+      });
+      if (savePath) {
+        if (isHarmonyOS) {
+          await hdcPullFile(currentDevice, file.path, savePath);
+          const elapsed = Date.now() - startTime;
+          alert(t("tools.downloadSuccess") + `, 耗时 ${elapsed} ms`);
+        } else {
+          // 这里可以添加 Android 设备的文件下载逻辑
+          alert(t("tools.downloadFailed") + `: Android download not implemented`);
+        }
+      }
+    } catch (e: any) {
+      let errorMessage = e.message || String(e);
+      // 处理错误信息，移除技术词汇和标记
+      errorMessage = errorMessage.replace(/HDC命令执行失败:|HDC 命令执行失败:|\[Fail\]/g, '').trim();
+      alert(t("tools.downloadFailed") + `: ${errorMessage}`);
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  const handleUpload = async () => {
+    if (!currentDevice) return;
+    setUploading(true);
+    setError(null);
+    const startTime = Date.now();
+    try {
+      const selectedFiles = await open({
+        multiple: true,
+        directory: false,
+      });
+      if (selectedFiles && selectedFiles.length > 0) {
+        for (const filePath of selectedFiles) {
+          const fileName = filePath.split('/').pop() || filePath;
+          if (isHarmonyOS) {
+            await hdcPushFile(currentDevice, filePath, `${currentPath}/${fileName}`);
+          } else {
+            // 这里可以添加 Android 设备的文件上传逻辑
+            alert(t("tools.uploadFailed") + `: Android upload not implemented`);
+          }
+        }
+        loadFiles(currentPath);
+        const elapsed = Date.now() - startTime;
+        alert(t("tools.uploadSuccess") + `, 耗时 ${elapsed} ms`);
+      }
+    } catch (e: any) {
+      let errorMessage = e.message || String(e);
+      // 处理错误信息，移除技术词汇和标记
+      errorMessage = errorMessage.replace(/HDC命令执行失败:|HDC 命令执行失败:|\[Fail\]/g, '').trim();
+      alert(t("tools.uploadFailed") + `: ${errorMessage}`);
+    } finally {
+      setUploading(false);
+    }
+  };
+
   // Build path segments for breadcrumb
   const pathParts = currentPath === "/" ? [] : currentPath.split("/").filter(Boolean);
 
@@ -310,12 +416,12 @@ const FileManagerTab: React.FC = () => {
         {/* Back button */}
         <button
           onClick={() => {
-            if (currentPath !== "/") {
+            if (currentPath !== "/" && currentPath !== "/mnt/data/100/media_fuse/Photo") {
               const parent = "/" + pathParts.slice(0, -1).join("/");
               navigateTo(parent || "/");
             }
           }}
-          disabled={currentPath === "/"}
+          disabled={currentPath === "/" || (isHarmonyOS && currentPath === "/mnt/data/100/media_fuse/Photo")}
           className="p-1.5 rounded-md hover:bg-dark-700/50 text-dark-400 hover:text-dark-300 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -341,29 +447,45 @@ const FileManagerTab: React.FC = () => {
             />
           ) : (
             <div className="flex items-center gap-0.5 min-w-0 overflow-hidden">
-              {/* Root */}
+              {/* 根目录 */}
               <button
                 onClick={() => navigateTo("/")}
                 className="text-xs text-accent-400 hover:text-accent-300 hover:bg-dark-700/30 px-1.5 py-0.5 rounded transition-colors flex-shrink-0"
               >
                 /
               </button>
-              {pathParts.map((part, i) => (
-                <React.Fragment key={i}>
-                  <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-dark-600 flex-shrink-0">
-                    <polyline points="9 18 15 12 9 6" />
-                  </svg>
-                  <button
-                    onClick={() => navigateTo("/" + pathParts.slice(0, i + 1).join("/"))}
-                    className="text-xs text-accent-400 hover:text-accent-300 hover:bg-dark-700/30 px-1.5 py-0.5 rounded transition-colors truncate"
-                  >
-                    {part}
-                  </button>
-                </React.Fragment>
-              ))}
+              {pathParts.map((part, i) => {
+                return (
+                  <React.Fragment key={i}>
+                    <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-dark-600 flex-shrink-0">
+                      <polyline points="9 18 15 12 9 6" />
+                    </svg>
+                    <button
+                      onClick={() => navigateTo("/" + pathParts.slice(0, i + 1).join("/"))}
+                      className="text-xs text-accent-400 hover:text-accent-300 hover:bg-dark-700/30 px-1.5 py-0.5 rounded transition-colors truncate"
+                    >
+                      {part}
+                    </button>
+                  </React.Fragment>
+                );
+              })}
             </div>
           )}
         </div>
+
+        {/* Upload button */}
+        <button
+          onClick={handleUpload}
+          disabled={!currentDevice || uploading}
+          className="p-1.5 rounded-md hover:bg-dark-700/50 text-dark-400 hover:text-dark-300 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+          title={t("tools.upload")}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <polyline points="17 8 12 3 7 8" />
+            <line x1="12" y1="3" x2="12" y2="15" />
+          </svg>
+        </button>
       </div>
 
       {/* File List */}
@@ -383,7 +505,7 @@ const FileManagerTab: React.FC = () => {
         ) : (
           <div className="divide-y divide-dark-700/30">
             {/* Back button */}
-            {currentPath !== "/" && (
+            {currentPath !== "/" && currentPath !== "/mnt/data/100/media_fuse/Photo" && (
               <button
                 onClick={() => {
                   const parent = "/" + pathParts.slice(0, -1).join("/");
@@ -398,28 +520,55 @@ const FileManagerTab: React.FC = () => {
               </button>
             )}
             {files.map((file) => (
-              <button
-                key={file.path}
-                onClick={() => file.is_directory && navigateTo(file.path)}
-                className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-dark-700/30 transition-colors text-left"
-              >
-                {file.is_directory ? (
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-accent-400 flex-shrink-0">
-                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-                  </svg>
-                ) : (
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-dark-400 flex-shrink-0">
-                    <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" />
-                    <polyline points="13 2 13 9 20 9" />
-                  </svg>
-                )}
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm text-dark-200 truncate">{file.name}</p>
-                </div>
-                <span className="text-xs text-dark-500 flex-shrink-0">
-                  {file.is_directory ? t("tools.folder") : file.size}
-                </span>
-              </button>
+              <div key={file.path} className="w-full">
+                <button
+                  onClick={() => file.is_directory && navigateTo(file.path)}
+                  className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-dark-700/30 transition-colors text-left group"
+                >
+                  {file.is_directory ? (
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-accent-400 flex-shrink-0">
+                      <path d="M22 19 a 2 2 0 0 1-2 2 H4 a 2 2 0 0 1-2-2 V5 a 2 2 0 0 1 2-2 h5 l2 3 h9 a 2 2 0 0 1 2 2 z" />
+                    </svg>
+                  ) : (
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-dark-400 flex-shrink-0">
+                      <path d="M13 2 H6 a 2 2 0 0 0-2 2 v16 a 2 2 0 0 0 2 2 h12 a 2 2 0 0 0 2-2 V9 z" />
+                      <polyline points="13 2 13 9 20 9" />
+                    </svg>
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 relative">
+                      <p className="text-sm text-dark-200 truncate">{file.name}</p>
+                      {'full_info' in file && file.full_info && (
+                        <span className="absolute left-0 top-full mt-1 bg-dark-800/90 border border-dark-700/50 rounded px-2 py-1 text-xs text-dark-400 whitespace-nowrap opacity-0 invisible group-hover:opacity-100 group-hover:visible transition-all duration-200 z-10 font-mono">
+                          {file.full_info}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-dark-500 flex-shrink-0">
+                      {file.is_directory ? t("tools.folder") : file.size}
+                    </span>
+                    {!file.is_directory && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDownload(file);
+                        }}
+                        disabled={downloading}
+                        className="p-1 rounded-md hover:bg-dark-700/50 text-dark-400 hover:text-dark-300 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                        title={t("tools.download")}
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <polyline points="12 3 12 15" />
+                          <polyline points="8 11 12 15 16 11" />
+                          <line x1="21" y1="21" x2="3" y2="21" />
+                        </svg>
+                      </button>
+                    )}
+                  </div>
+                </button>
+              </div>
             ))}
           </div>
         )}
@@ -451,25 +600,34 @@ const LogcatTab: React.FC = () => {
     setLoading(true);
 
     try {
-      const initialLogs = await getLogcat(currentDevice, 100);
-      setLogs(initialLogs.split("\n"));
+      // 启动实时日志流
+      await startLogcatStream(currentDevice);
       setLoading(false);
 
+      // 监听日志输出事件
       onLogOutput((event) => {
         setLogs((prev) => [...prev, event.line]);
       }).then((unlisten) => {
         unlistenRef.current = unlisten;
       });
-    } catch {
+    } catch (error) {
+      console.error("启动日志流失败:", error);
       setLoading(false);
       setIsCapturing(false);
     }
   };
 
-  const stopCapture = () => {
+  const stopCapture = async () => {
     setIsCapturing(false);
     unlistenRef.current?.();
     unlistenRef.current = null;
+    
+    // 停止实时日志流
+    try {
+      await stopLogcatStream();
+    } catch (error) {
+      console.error("停止日志流失败:", error);
+    }
   };
 
   const clearLogs = () => {
@@ -550,6 +708,129 @@ const LogcatTab: React.FC = () => {
             </div>
           ))
         )}
+      </div>
+    </div>
+  );
+};
+
+const ProxyTab: React.FC = () => {
+  const { t } = useTranslation();
+  const { currentDevice, devices } = useDeviceStore();
+  const [proxyHost, setProxyHost] = useState("127.0.0.1");
+  const [proxyPort, setProxyPort] = useState("8080");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleApplyProxy = async () => {
+    if (!currentDevice) return;
+    
+    setLoading(true);
+    setError(null);
+    
+    try {
+      const platform = devices.find((d) => d.serial === currentDevice)?.platform || "android";
+      
+      if (platform === "harmonyos") {
+        // HarmonyOS proxy settings using network-cfg
+        const proxyCommand = `network-cfg set http_proxy ${proxyHost}:${proxyPort}`;
+        await hdcShell(currentDevice, proxyCommand);
+      } else {
+        // Android proxy settings
+        const proxyCommand = `settings put global http_proxy ${proxyHost}:${proxyPort}`;
+        await executeShell(currentDevice, proxyCommand);
+      }
+      
+      // Show success message
+      alert(t("tools.proxyApplied"));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t("tools.proxyFailed"));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleClearProxy = async () => {
+    if (!currentDevice) return;
+    
+    setLoading(true);
+    setError(null);
+    
+    try {
+      const platform = devices.find((d) => d.serial === currentDevice)?.platform || "android";
+      
+      if (platform === "harmonyos") {
+        // HarmonyOS clear proxy using network-cfg
+        await hdcShell(currentDevice, `network-cfg set http_proxy 0`);
+      } else {
+        // Android clear proxy
+        await executeShell(currentDevice, `settings put global http_proxy :0`);
+      }
+      
+      // Show success message
+      alert(t("tools.proxyCleared"));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t("tools.proxyFailed"));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="h-full flex flex-col">
+      <div className="bg-dark-800/50 border border-dark-700/50 rounded-xl p-4">
+        {/* Proxy Host */}
+        <div className="mb-3">
+          <label className="block text-sm text-dark-400 mb-1.5">{t("tools.proxyHost")}</label>
+          <input
+            type="text"
+            value={proxyHost}
+            onChange={(e) => setProxyHost(e.target.value)}
+            placeholder="127.0.0.1"
+            className="w-full px-3 py-1.5 bg-dark-800 border border-dark-700 rounded-lg text-sm text-dark-100 placeholder-dark-500 focus:outline-none focus:border-accent-500"
+          />
+        </div>
+
+        {/* Proxy Port */}
+        <div className="mb-4">
+          <label className="block text-sm text-dark-400 mb-1.5">{t("tools.proxyPort")}</label>
+          <input
+            type="number"
+            value={proxyPort}
+            onChange={(e) => setProxyPort(e.target.value)}
+            placeholder="8080"
+            className="w-full px-3 py-1.5 bg-dark-800 border border-dark-700 rounded-lg text-sm text-dark-100 placeholder-dark-500 focus:outline-none focus:border-accent-500"
+          />
+        </div>
+
+        {/* Error Message */}
+        {error && (
+          <div className="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-sm text-red-400">
+            {error}
+          </div>
+        )}
+
+        {/* Buttons */}
+        <div className="grid grid-cols-2 gap-3">
+          <button
+            onClick={handleApplyProxy}
+            disabled={!currentDevice || loading}
+            className="px-4 py-2 rounded-lg bg-accent-500 text-white hover:bg-accent-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm font-medium"
+          >
+            {loading ? t("common.loading") : t("tools.applyProxy")}
+          </button>
+          <button
+            onClick={handleClearProxy}
+            disabled={!currentDevice || loading}
+            className="px-4 py-2 rounded-lg bg-dark-700 text-dark-200 hover:bg-dark-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors text-sm font-medium"
+          >
+            {loading ? t("common.loading") : t("tools.clearProxy")}
+          </button>
+        </div>
+
+        {/* Info */}
+        <div className="mt-4 p-3 bg-dark-700/50 border border-dark-600/50 rounded-lg text-xs text-dark-400">
+          <p>{t("tools.proxyInfo")}</p>
+        </div>
       </div>
     </div>
   );

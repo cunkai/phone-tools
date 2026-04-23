@@ -149,3 +149,16 @@ export interface DeviceControlState {
   airplaneMode: boolean;
   volume: number;
 }
+
+export interface HdcFileInfo {
+  name: string;
+  path: string;
+  is_directory: boolean;
+  size: string;
+  permissions: string;
+  last_modified: string;
+  links: string;
+  owner: string;
+  group: string;
+  full_info: string;
+}

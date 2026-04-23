@@ -1,5 +1,5 @@
 [package]
-name = "android-toolbox"
+name = "phone-toolbox"
 version = "1.0.0"
 description = "Android Toolbox - Control Android phones via ADB"
 authors = ["Android Toolbox"]

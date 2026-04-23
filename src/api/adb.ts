@@ -5,6 +5,7 @@ import type {
   InstalledApp,
   FileInfo,
   PerformanceInfo,
+  HdcFileInfo,
 } from "../types";
 
 export async function getDevices(): Promise<AdbDevice[]> {
@@ -130,6 +131,14 @@ export async function getLogcat(
   lines?: number
 ): Promise<string> {
   return invoke<string>("get_logcat", { serial, lines });
+}
+
+export async function startLogcatStream(serial: string): Promise<void> {
+  return invoke<void>("start_logcat_stream", { serial });
+}
+
+export async function stopLogcatStream(): Promise<void> {
+  return invoke<void>("stop_logcat_stream");
 }
 
 export async function getPerformanceInfo(serial: string): Promise<PerformanceInfo> {
@@ -298,15 +307,23 @@ export async function hdcInstallApp(serial: string, filePath: string): Promise<s
 }
 
 export async function hdcUninstallApp(serial: string, packageName: string): Promise<string> {
-  return invoke<string>("hdc_uninstall_app", { serial, package: packageName });
+    return invoke<string>("hdc_uninstall_app", { serial, package: packageName });
+}
+
+export async function hdcClearCache(serial: string, packageName: string): Promise<string> {
+    return invoke<string>("hdc_clear_cache", { serial, package: packageName });
+}
+
+export async function hdcClearData(serial: string, packageName: string): Promise<string> {
+    return invoke<string>("hdc_clear_data", { serial, package: packageName });
 }
 
 export async function hdcGetInstalledApps(serial: string): Promise<InstalledApp[]> {
   return invoke<InstalledApp[]>("hdc_get_installed_apps", { serial });
 }
 
-export async function hdcGetAppList(serial: string): Promise<string[]> {
-  return invoke<string[]>("hdc_get_app_list", { serial });
+export async function hdcGetAppList(serial: string): Promise<Array<{bundleName: string, label: string}>> {
+  return invoke<Array<{bundleName: string, label: string}>>("hdc_get_app_list", { serial });
 }
 
 export async function hdcGetAppDetail(serial: string, packageName: string): Promise<InstalledApp> {
@@ -335,6 +352,14 @@ export async function hdcPushFile(serial: string, localPath: string, remotePath:
 
 export async function hdcPullFile(serial: string, remotePath: string, localPath: string): Promise<string> {
   return invoke<string>("hdc_pull_file", { serial, remotePath, localPath });
+}
+
+export async function hdcGetFileList(serial: string, path: string): Promise<HdcFileInfo[]> {
+  return invoke<HdcFileInfo[]>("hdc_get_file_list", { serial, path });
+}
+
+export async function hdcCheckPathsPermission(serial: string, paths: string[]): Promise<Record<string, string>> {
+  return invoke<Record<string, string>>("hdc_check_paths_permission", { serial, paths });
 }
 
 export async function hdcGetDeviceInfo(serial: string): Promise<any> {
@@ -385,6 +410,14 @@ export async function getHdcPath(): Promise<string> {
 
 export async function setHdcPath(path: string): Promise<void> {
   return invoke<void>("set_hdc_path", { path });
+}
+
+export async function getAdbVersion(): Promise<string> {
+  return invoke<string>("get_adb_version");
+}
+
+export async function getHdcVersion(): Promise<string> {
+  return invoke<string>("get_hdc_version");
 }
 
 // HarmonyOS 性能监控

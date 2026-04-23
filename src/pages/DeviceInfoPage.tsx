@@ -1,3 +1,10 @@
+// 扩展Window接口
+declare global {
+  interface Window {
+    openAppGallery: (appName: string) => void;
+  }
+}
+
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useDeviceStore } from "../store/deviceStore";
@@ -17,11 +24,140 @@ import {
   hdcRebootRecovery,
   hdcRebootBootloader,
   hdcShutdown,
+  hdcShell,
 } from "../api/adb";
 import type { PerformanceInfo, TopMemoryApp, HdcPerformanceInfo, HdcMemoryInfo, HdcBatteryInfo, HdcStorageInfo } from "../types";
+import { open } from "@tauri-apps/plugin-shell";
 import LoadingSpinner from "../components/LoadingSpinner";
 import PanelRefreshButton from "../components/PanelRefreshButton";
 import RawDataDialog from "../components/RawDataDialog";
+
+// 翻译映射表
+const translationMap: Record<string, string> = {
+  "WifiDevice": "WiFi 设备",
+  "WifiHotspot": "WiFi 热点",
+  "WifiP2p": "WiFi P2P",
+  "WifiScan": "WiFi 扫描",
+  "NetConnManager": "网络连接管理",
+  "NetPolicyManager": "网络策略管理",
+  "NetStatsManager": "网络统计管理",
+  "NetTetheringManager": "网络共享管理",
+  "NetsysNative": "网络系统",
+  "AVCodecService": "音视频编解码服务",
+  "MediaKeySystemService": "媒体密钥系统服务",
+  "TelephonyCoreService": "电话核心服务",
+  "AppDomainVerifyManager": "应用域验证管理",
+  
+  "WiFi active state": "状态",
+  "WiFi connection status": "连接状态",
+  "Connection.ssid": "网络名称",
+  "Connection.bssid": "接入点地址",
+  "Connection.rssi": "信号强度",
+  "Connection.band": "频段",
+  "Connection.frequency": "频率",
+  "Connection.linkSpeed": "连接速度",
+  "Connection.macAddress": "MAC 地址",
+  "Connection.isHiddenSSID": "隐藏网络",
+  "Connection.signalLevel": "信号等级",
+  "Country Code": "国家代码",
+  
+  "WiFi hotspot active state": "热点状态",
+  
+  "P2P enable status": "P2P 状态",
+  
+  "Is scan service running": "扫描服务",
+  
+  "Net connect Info": "网络连接信息",
+  "SupplierId": "供应商 ID",
+  "NetId": "网络 ID",
+  "ConnStat": "连接状态",
+  "IsAvailable": "是否可用",
+  "IsRoaming": "是否漫游",
+  "Strength": "信号强度",
+  "LinkUpBandwidthKbps": "上行带宽",
+  "LinkDownBandwidthKbps": "下行带宽",
+  "Uid": "用户 ID",
+  "Dns result Info": "DNS 结果信息",
+  "netId": "网络 ID",
+  "totalReports": "报告总数",
+  "failReports": "失败报告",
+  
+  "UidPolicy": "用户 ID 策略",
+  "DeviceIdleAllowedList": "设备空闲允许列表",
+  "DeviceIdleMode": "设备空闲模式",
+  "PowerSaveAllowedList": "省电允许列表",
+  "PowerSaveMode": "省电模式",
+  "BackgroundPolicy": "后台策略",
+  "MeteredIfaces": "计费接口",
+  "QuotaPolicies": "配额策略",
+  
+  "Net Stats Info": "网络统计信息",
+  "RxBytes": "接收字节",
+  "TxBytes": "发送字节",
+  "RxPackets": "接收数据包",
+  "TxPackets": "发送数据包",
+  "wlan0-TxBytes": "WLAN 发送字节",
+  "wlan0-RxBytes": "WLAN 接收字节",
+  
+  "Net Sharing Info": "网络共享信息",
+  "Is Sharing Supported": "共享支持",
+  "Sharing State": "共享状态",
+  "Usb Regexs": "USB 正则",
+  "Wifi Regexs": "WiFi 正则",
+  "Bluetooth Regexs": "蓝牙正则",
+  
+  "Netsys connect manager": "网络系统连接管理",
+  "default NetId": "默认网络 ID",
+  "interfaces": "接口",
+  "TimeoutMsec": "超时时间",
+  "RetryCount": "重试次数",
+  "Servers": "服务器",
+  "Domains": "域名",
+  
+  "Codec_Server": "编解码服务器",
+  "Instance_0_Info": "实例信息",
+  "CallerPid": "调用者进程 ID",
+  "CallerProcessName": "调用者进程名",
+  "InstanceId": "实例 ID",
+  "Status": "状态",
+  "LastError": "最后错误",
+  "CodecName": "编解码器名称",
+  "Width": "宽度",
+  "Height": "高度",
+  "FrameRate": "帧率",
+  "PixelFormat": "像素格式",
+  
+  "MediaKeySystem MemoryUsage": "媒体密钥系统内存使用",
+  "Plugin Name": "插件名称",
+  "Plugin UUID": "插件 UUID",
+  "Total MediaKeySystem Num": "媒体密钥系统总数",
+  
+  "Ohos core_service service": "鸿蒙核心服务",
+  "BindTime": "绑定时间",
+  "EndTime": "结束时间",
+  "SpendTime": "耗时",
+  "SlotId": "卡槽 ID",
+  "IsSimActive": "SIM 激活",
+
+  "SignalLevel": "信号等级",
+  "CardType": "卡类型",
+  "SimState": "SIM 状态",
+  "Spn": "运营商简称",
+  "OperatorName": "运营商名称",
+  "PsRadioTech": "PS 无线技术",
+  "CsRadioTech": "CS 无线技术",
+  
+  "appIdentifier": "应用标识符",
+  "domain verify status": "域验证状态",
+  
+  "activated": "已激活",
+  "connected": "已连接",
+  "disconnected": "已断开",
+  "inactive": "未激活",
+  "enable": "已启用",
+  "true": "是",
+  "false": "否"
+};
 
 const DeviceInfoPage: React.FC = () => {
   const { t } = useTranslation();
@@ -45,6 +181,20 @@ const DeviceInfoPage: React.FC = () => {
   const [batteryLoading, setBatteryLoading] = useState(false);
   const [storageInfo, setStorageInfo] = useState<HdcStorageInfo | null>(null);
   const [storageLoading, setStorageLoading] = useState(false);
+  // Hidumper 各部分数据
+  const [hidumperSections, setHidumperSections] = useState<Record<string, { data: string; loading: boolean }>>({});
+
+  // 需要展示的部分，拆分成小面板
+  const sectionConfigs = [
+    { name: "WifiDevice", sections: ["WifiDevice", "WifiHotspot", "WifiP2p", "WifiScan"], title: "WiFi 设备" },
+    { name: "NetConnManager", sections: ["NetConnManager"], title: "网络连接管理" },
+    { name: "NetStatsManager", sections: ["NetStatsManager"], title: "网络统计管理" },
+    { name: "NetTetheringManager", sections: ["NetTetheringManager"], title: "网络共享管理" },
+    { name: "NetsysNative", sections: ["NetsysNative"], title: "网络系统" },
+    { name: "AVCodecService", sections: ["AVCodecService"], title: "音视频编解码服务" },
+    { name: "MediaKeySystemService", sections: ["MediaKeySystemService"], title: "媒体密钥系统服务" },
+    { name: "TelephonyCoreService", sections: ["TelephonyCoreService"], title: "电话核心服务" }
+  ];
 
   // TOP 内存应用
   const [topMemoryApps, setTopMemoryApps] = useState<TopMemoryApp[]>([]);
@@ -151,6 +301,97 @@ const DeviceInfoPage: React.FC = () => {
     }
   }, [currentDevice, isHarmonyOS]);
 
+  // 环境变量数据状态
+  const [environmentVariablesData, setEnvironmentVariablesData] = useState<string>("");
+  const [environmentVariablesLoading, setEnvironmentVariablesLoading] = useState(false);
+
+  // 加载所有 Hidumper 部分（只调用一次命令）
+  const loadAllHidumperSections = useCallback(() => {
+    if (!currentDevice || !isHarmonyOS) return;
+    
+    // 收集所有需要的 sections
+    const allSections = sectionConfigs.flatMap(config => config.sections);
+    const uniqueSections = [...new Set(allSections)];
+    
+    // 为所有面板设置加载状态
+    const newLoadingState: Record<string, { data: string; loading: boolean }> = {};
+    sectionConfigs.forEach(config => {
+      newLoadingState[config.name] = { 
+        data: hidumperSections[config.name]?.data || "", 
+        loading: true 
+      };
+    });
+    setHidumperSections(newLoadingState);
+    
+    // 只调用一次 hidumper 命令获取所有数据
+    hdcShell(currentDevice, `hidumper -s ${uniqueSections.join(' ')}`)
+      .then(allData => {
+        // 将数据分配到各个面板
+        const newState: Record<string, { data: string; loading: boolean }> = {};
+        
+        sectionConfigs.forEach(config => {
+          // 提取当前面板相关的数据
+          let sectionData = "";
+          
+          config.sections.forEach(section => {
+            // 查找当前 section 的数据块
+            const startMarker = `----------------------------------${section}----------------------------------`;
+            
+            // 查找开始位置
+            const startIndex = allData.indexOf(startMarker);
+            if (startIndex !== -1) {
+              // 查找结束位置（下一个 section 的开始或文件结束）
+              let endIndex = allData.length;
+              
+              // 查找下一个 section 的开始
+              const nextSectionStart = allData.indexOf("----------------------------------", startIndex + startMarker.length);
+              if (nextSectionStart !== -1) {
+                endIndex = nextSectionStart;
+              }
+              
+              // 提取从开始标记到下一个 section 开始的数据
+              sectionData += allData.substring(startIndex, endIndex) + '\n';
+            }
+          });
+          
+          newState[config.name] = { data: sectionData, loading: false };
+        });
+        
+        setHidumperSections(newState);
+      })
+      .catch(() => {
+        // 加载失败时保持原有数据
+        const newState: Record<string, { data: string; loading: boolean }> = {};
+        sectionConfigs.forEach(config => {
+          newState[config.name] = { 
+            data: hidumperSections[config.name]?.data || "", 
+            loading: false 
+          };
+        });
+        setHidumperSections(newState);
+      });
+  }, [currentDevice, isHarmonyOS, sectionConfigs, hidumperSections]);
+
+  // 加载环境变量数据
+  const loadEnvironmentVariablesData = useCallback(() => {
+    if (!currentDevice || !isHarmonyOS) return;
+    setEnvironmentVariablesLoading(true);
+    hdcShell(currentDevice, `set | grep "="`)
+      .then(data => {
+        setEnvironmentVariablesData(data);
+        setEnvironmentVariablesLoading(false);
+      })
+      .catch(() => {
+        setEnvironmentVariablesLoading(false);
+      });
+  }, [currentDevice, isHarmonyOS]);
+
+  // 加载单个 Hidumper 配置（从总数据中提取）
+  const loadHidumperConfig = useCallback((config: { name: string; sections: string[] }) => {
+    // 直接调用加载所有数据的函数
+    loadAllHidumperSections();
+  }, [loadAllHidumperSections]);
+
   // TOP 内存应用刷新（仅 Android）
   const loadTopMemory = useCallback(() => {
     if (!currentDevice || isHarmonyOS) return;
@@ -167,7 +408,8 @@ const DeviceInfoPage: React.FC = () => {
     loadMemory();
     loadBattery();
     loadStorage();
-  }, [loadCpu, loadMemory, loadBattery, loadStorage]);
+    loadAllHidumperSections();
+  }, [loadCpu, loadMemory, loadBattery, loadStorage, loadAllHidumperSections]);
 
   // Refresh all: 串行加载，每个命令之间留间隔
   const refreshAll = useCallback(async () => {
@@ -179,11 +421,13 @@ const DeviceInfoPage: React.FC = () => {
     if (isHarmonyOS) {
       // 鸿蒙：并行获取所有独立面板数据
       await Promise.all([
-        loadCpu(),
-        loadMemory(),
-        loadBattery(),
-        loadStorage(),
-      ]);
+                loadCpu(),
+                loadMemory(),
+                loadBattery(),
+                loadStorage(),
+                loadAllHidumperSections(),
+                loadEnvironmentVariablesData()
+              ]);
     } else {
       // Android：一次性获取
       setPerfLoading(true);
@@ -203,7 +447,7 @@ const DeviceInfoPage: React.FC = () => {
     await ensureStaticInfo(currentDevice);
 
     setRefreshing(false);
-  }, [currentDevice, ensureStaticInfo]);
+  }, [currentDevice, ensureStaticInfo, isHarmonyOS, loadAllHidumperSections, loadEnvironmentVariablesData]);
 
   // 首次加载 + 设备变化时自动加载所有数据
   useEffect(() => {
@@ -386,21 +630,15 @@ const DeviceInfoPage: React.FC = () => {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {/* CPU Gauge */}
           <div className="bg-dark-800/50 border border-dark-700/50 rounded-xl p-6 relative group">
-            <PanelRefreshButton onRefresh={loadCpu} loading={isHarmonyOS ? cpuLoading : perfLoading} />
-            <button
-              className="hidden group-hover:flex absolute -top-1 right-5 z-10 w-6 h-6 items-center justify-center
-                         bg-dark-700 hover:bg-dark-600 border border-dark-600 rounded-full
-                         text-dark-400 hover:text-dark-200 transition-colors"
-              onClick={() => showRawData(t("monitor.cpuUsage"), cpuRaw || JSON.stringify(perfInfo, null, 2))}
-              title={t("common.viewRawData")}
-            >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                <polyline points="14 2 14 8 20 8" />
-                <line x1="16" y1="13" x2="8" y2="13" />
-                <line x1="16" y1="17" x2="8" y2="17" />
-              </svg>
-            </button>
+            <div className="absolute -top-1 right-1 z-10 flex items-center gap-1 hidden group-hover:flex">
+              <button
+                className="px-1.5 py-0.5 rounded text-[10px] text-dark-500 hover:text-dark-300 transition-colors bg-dark-700 hover:bg-dark-600 border border-dark-600"
+                onClick={() => showRawData(t("monitor.cpuUsage"), cpuRaw || JSON.stringify(perfInfo, null, 2))}
+              >
+                {t("common.viewRawData")}
+              </button>
+              <PanelRefreshButton onRefresh={loadCpu} loading={isHarmonyOS ? cpuLoading : perfLoading} />
+            </div>
             <h3 className="text-sm font-semibold text-dark-300 mb-4 flex items-center">
               {t("monitor.cpuUsage")}
               {(isHarmonyOS ? cpuLoading : perfLoading) && <MiniLoader />}
@@ -430,21 +668,15 @@ const DeviceInfoPage: React.FC = () => {
 
           {/* Memory */}
           <div className="bg-dark-800/50 border border-dark-700/50 rounded-xl p-6 relative group">
-            <PanelRefreshButton onRefresh={loadMemory} loading={isHarmonyOS ? memLoading : perfLoading} />
-            <button
-              className="hidden group-hover:flex absolute -top-1 right-5 z-10 w-6 h-6 items-center justify-center
-                         bg-dark-700 hover:bg-dark-600 border border-dark-600 rounded-full
-                         text-dark-400 hover:text-dark-200 transition-colors"
-              onClick={() => showRawData(t("monitor.memoryUsage"), memoryInfo?.raw || JSON.stringify(perfInfo, null, 2))}
-              title={t("common.viewRawData")}
-            >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                <polyline points="14 2 14 8 20 8" />
-                <line x1="16" y1="13" x2="8" y2="13" />
-                <line x1="16" y1="17" x2="8" y2="17" />
-              </svg>
-            </button>
+            <div className="absolute -top-1 right-1 z-10 flex items-center gap-1 hidden group-hover:flex">
+              <button
+                className="px-1.5 py-0.5 rounded text-[10px] text-dark-500 hover:text-dark-300 transition-colors bg-dark-700 hover:bg-dark-600 border border-dark-600"
+                onClick={() => showRawData(t("monitor.memoryUsage"), memoryInfo?.raw || JSON.stringify(perfInfo, null, 2))}
+              >
+                {t("common.viewRawData")}
+              </button>
+              <PanelRefreshButton onRefresh={loadMemory} loading={isHarmonyOS ? memLoading : perfLoading} />
+            </div>
             <h3 className="text-sm font-semibold text-dark-300 mb-4 flex items-center">
               {t("monitor.memoryUsage")}
               {(isHarmonyOS ? memLoading : perfLoading) && <MiniLoader />}
@@ -481,21 +713,15 @@ const DeviceInfoPage: React.FC = () => {
 
           {/* Battery */}
           <div className="bg-dark-800/50 border border-dark-700/50 rounded-xl p-6 relative group">
-            <PanelRefreshButton onRefresh={loadBattery} loading={isHarmonyOS ? batteryLoading : perfLoading} />
-            <button
-              className="hidden group-hover:flex absolute -top-1 right-5 z-10 w-6 h-6 items-center justify-center
-                         bg-dark-700 hover:bg-dark-600 border border-dark-600 rounded-full
-                         text-dark-400 hover:text-dark-200 transition-colors"
-              onClick={() => showRawData(t("monitor.batteryStatus"), batteryInfo?.raw || JSON.stringify(perfInfo, null, 2))}
-              title={t("common.viewRawData")}
-            >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                <polyline points="14 2 14 8 20 8" />
-                <line x1="16" y1="13" x2="8" y2="13" />
-                <line x1="16" y1="17" x2="8" y2="17" />
-              </svg>
-            </button>
+            <div className="absolute -top-1 right-1 z-10 flex items-center gap-1 hidden group-hover:flex">
+              <button
+                className="px-1.5 py-0.5 rounded text-[10px] text-dark-500 hover:text-dark-300 transition-colors bg-dark-700 hover:bg-dark-600 border border-dark-600"
+                onClick={() => showRawData(t("monitor.batteryStatus"), batteryInfo?.raw || JSON.stringify(perfInfo, null, 2))}
+              >
+                {t("common.viewRawData")}
+              </button>
+              <PanelRefreshButton onRefresh={loadBattery} loading={isHarmonyOS ? batteryLoading : perfLoading} />
+            </div>
             <h3 className="text-sm font-semibold text-dark-300 mb-4 flex items-center">
               {t("monitor.batteryStatus")}
               {(isHarmonyOS ? batteryLoading : perfLoading) && <MiniLoader />}
@@ -517,7 +743,16 @@ const DeviceInfoPage: React.FC = () => {
                   <div className="space-y-1.5">
                     <div className="flex justify-between">
                       <span className="text-xs text-dark-500">{t("monitor.status")}</span>
-                      <span className="text-xs text-dark-300">{batteryStatus || "-"}</span>
+                      <span className="text-xs text-dark-300">
+                        {isHarmonyOS && batteryInfo ? (
+                          batteryInfo.status === "0" ? "未充电" : 
+                          batteryInfo.status === "1" ? "充电中" : 
+                          batteryInfo.status === "2" ? "已充满" : 
+                          batteryInfo.status
+                        ) : (
+                          batteryStatus || "-"
+                        )}
+                      </span>
                     </div>
                     {isHarmonyOS && batteryInfo ? (
                       <>
@@ -539,7 +774,14 @@ const DeviceInfoPage: React.FC = () => {
                         </div>
                         <div className="flex justify-between">
                           <span className="text-xs text-dark-500">充电方式</span>
-                          <span className="text-xs text-dark-300">{batteryInfo.plugged_type === "1" ? "AC" : batteryInfo.plugged_type === "2" ? "USB" : batteryInfo.plugged_type}</span>
+                          <span className="text-xs text-dark-300">
+                            {batteryInfo.plugged_type === "0" ? "未连接" : 
+                             batteryInfo.plugged_type === "AC" ? "AC快充" : 
+                             batteryInfo.plugged_type === "USB" ? "USB慢充" : 
+                             batteryInfo.plugged_type === "1" ? "AC快充" : 
+                             batteryInfo.plugged_type === "2" ? "USB慢充" : 
+                             batteryInfo.plugged_type}
+                          </span>
                         </div>
                         <div className="flex justify-between">
                           <span className="text-xs text-dark-500">电池技术</span>
@@ -564,21 +806,15 @@ const DeviceInfoPage: React.FC = () => {
 
           {/* Storage */}
           <div className="bg-dark-800/50 border border-dark-700/50 rounded-xl p-6 relative group">
-            <PanelRefreshButton onRefresh={loadStorage} loading={isHarmonyOS ? storageLoading : perfLoading} />
-            <button
-              className="hidden group-hover:flex absolute -top-1 right-5 z-10 w-6 h-6 items-center justify-center
-                         bg-dark-700 hover:bg-dark-600 border border-dark-600 rounded-full
-                         text-dark-400 hover:text-dark-200 transition-colors"
-              onClick={() => showRawData(t("monitor.storageSpace"), storageInfo?.raw || JSON.stringify(perfInfo, null, 2))}
-              title={t("common.viewRawData")}
-            >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                <polyline points="14 2 14 8 20 8" />
-                <line x1="16" y1="13" x2="8" y2="13" />
-                <line x1="16" y1="17" x2="8" y2="17" />
-              </svg>
-            </button>
+            <div className="absolute -top-1 right-1 z-10 flex items-center gap-1 hidden group-hover:flex">
+              <button
+                className="px-1.5 py-0.5 rounded text-[10px] text-dark-500 hover:text-dark-300 transition-colors bg-dark-700 hover:bg-dark-600 border border-dark-600"
+                onClick={() => showRawData(t("monitor.storageSpace"), storageInfo?.raw || JSON.stringify(perfInfo, null, 2))}
+              >
+                {t("common.viewRawData")}
+              </button>
+              <PanelRefreshButton onRefresh={loadStorage} loading={isHarmonyOS ? storageLoading : perfLoading} />
+            </div>
             <h3 className="text-sm font-semibold text-dark-300 mb-4 flex items-center">
               {t("monitor.storageSpace")}
               {(isHarmonyOS ? storageLoading : perfLoading) && <MiniLoader />}
@@ -609,6 +845,10 @@ const DeviceInfoPage: React.FC = () => {
                     <p className="text-sm text-dark-200 font-medium mt-1">{formatBytes(storageTotal)}</p>
                   </div>
                 </div>
+                <div className="bg-dark-700/30 rounded-lg p-3">
+                  <span className="text-xs text-dark-500">挂载点</span>
+                  <p className="text-sm text-dark-200 font-medium mt-1 font-mono">/dev/block/by-name/userdata</p>
+                </div>
               </div>
             ) : (
               <div className="flex items-center justify-center h-40">
@@ -620,14 +860,6 @@ const DeviceInfoPage: React.FC = () => {
 
         {/* Row 2: Extra info */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {/* CPU Architecture */}
-          <div className="bg-dark-800/50 border border-dark-700/50 rounded-xl p-6">
-            <h3 className="text-sm font-semibold text-dark-300 mb-4">
-              {t("deviceInfo.cpuArch")}
-            </h3>
-            <p className="text-dark-100 font-mono text-sm">{cachedInfo?.cpuArch || "-"}</p>
-          </div>
-
           {/* Top Memory Apps (仅 Android) */}
           {!isHarmonyOS && (
             <div className="bg-dark-800/50 border border-dark-700/50 rounded-xl p-6 relative group">
@@ -660,26 +892,95 @@ const DeviceInfoPage: React.FC = () => {
               )}
             </div>
           )}
+        </div>
 
-          {/* Reboot */}
-          <div className="bg-dark-800/50 border border-dark-700/50 rounded-xl p-6">
-            <h3 className="text-sm font-semibold text-dark-300 mb-4">{t("control.reboot")}</h3>
-            <div className="flex gap-2">
-              <button onClick={handleReboot}
-                className="flex-1 px-3 py-2 rounded-lg bg-dark-700 text-dark-200 hover:bg-yellow-500/20 hover:text-yellow-400 transition-colors text-sm font-medium">
-                {t("control.reboot")}
-              </button>
-              <button onClick={handleRebootRecovery}
-                className="flex-1 px-3 py-2 rounded-lg bg-dark-700 text-dark-200 hover:bg-orange-500/20 hover:text-orange-400 transition-colors text-sm font-medium">
-                {t("control.rebootRecovery")}
-              </button>
-              <button onClick={handleRebootBootloader}
-                className="flex-1 px-3 py-2 rounded-lg bg-dark-700 text-dark-200 hover:bg-red-500/20 hover:text-red-400 transition-colors text-sm font-medium">
-                {t("control.rebootBootloader")}
-              </button>
+        {/* Hidumper 各部分面板 */}
+        {isHarmonyOS && (
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {sectionConfigs.map((config) => {
+                const section = hidumperSections[config.name];
+                const items = parseSectionData(section?.data || "");
+                
+                return (
+                  <div key={config.name} className="bg-dark-800/50 border border-dark-700/50 rounded-xl p-4 relative group aspect-square flex flex-col">
+                    <div className="absolute -top-2 -right-2 z-10 flex items-center gap-1 hidden group-hover:flex">
+                      <button
+                        className="px-1.5 py-0.5 rounded text-[10px] text-dark-500 hover:text-dark-300 transition-colors bg-dark-700 hover:bg-dark-600 border border-dark-600"
+                        onClick={() => showRawData(config.title, section?.data || "")}
+                      >
+                        {t("common.viewRawData")}
+                      </button>
+                      <button
+                        onClick={() => loadHidumperConfig(config)}
+                        className="px-1.5 py-0.5 rounded text-[10px] text-dark-500 hover:text-dark-300 transition-colors bg-dark-700 hover:bg-dark-600 border border-dark-600 flex items-center gap-1"
+                      >
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={section?.loading ? "animate-spin" : ""}>
+                          <polyline points="23 4 23 10 17 10"></polyline>
+                          <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+                        </svg>
+                        {t("common.refresh")}
+                      </button>
+                    </div>
+                    <h4 className="text-sm font-semibold text-blue-400 mb-3 flex items-center gap-2 flex-shrink-0">
+                      {config.title}
+                      {section?.loading && <MiniLoader />}
+                    </h4>
+                    <div className="flex-1 min-h-0">
+                      {section?.loading && !section?.data ? (
+                        <div className="flex items-center justify-center h-full">
+                          <LoadingSpinner size="sm" />
+                        </div>
+                      ) : items.length > 0 ? (
+                        <div className="space-y-2 overflow-y-auto h-full pr-1">
+                          {items.map((item, idx) => (
+                            <div key={idx} className="flex flex-col">
+                              <span className="text-[11px] text-dark-500" dangerouslySetInnerHTML={{ __html: translate(item.key) }} />
+                              <span className="text-xs text-dark-200 font-mono" dangerouslySetInnerHTML={{ __html: translate(item.value) }} />
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="flex items-center justify-center h-full">
+                          <p className="text-xs text-dark-500">{t("common.noData")}</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* 环境变量面板 */}
+            <div className="bg-dark-800/50 border border-dark-700/50 rounded-xl p-6 relative group">
+              <div className="absolute -top-1 right-1 z-10 flex items-center gap-1 hidden group-hover:flex">
+                <button
+                  className="px-1.5 py-0.5 rounded text-[10px] text-dark-500 hover:text-dark-300 transition-colors bg-dark-700 hover:bg-dark-600 border border-dark-600"
+                  onClick={() => showRawData("环境变量原始数据", environmentVariablesData || "暂无数据")}
+                >
+                  {t("common.viewRawData")}
+                </button>
+                <button
+                  onClick={loadEnvironmentVariablesData}
+                  className="px-1.5 py-0.5 rounded text-[10px] text-dark-500 hover:text-dark-300 transition-colors bg-dark-700 hover:bg-dark-600 border border-dark-600 flex items-center gap-1"
+                >
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={environmentVariablesLoading ? "animate-spin" : ""}>
+                    <polyline points="23 4 23 10 17 10"></polyline>
+                    <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+                  </svg>
+                  {t("common.refresh")}
+                </button>
+              </div>
+              <h4 className="text-sm font-semibold text-blue-400 mb-4 flex items-center gap-2">
+                环境变量
+                {environmentVariablesLoading && <MiniLoader />}
+              </h4>
+              <div className="h-96 overflow-y-auto pr-2">
+                <EnvironmentVariablesTable />
+              </div>
             </div>
           </div>
-        </div>
+        )}
       </div>
 
       <RawDataDialog
@@ -688,6 +989,226 @@ const DeviceInfoPage: React.FC = () => {
         title={rawDialogTitle}
         data={rawDialogData}
       />
+    </div>
+  );
+};
+
+// 应用ID和应用名称对照表
+const appIdToNameMap: Record<string, string> = {
+  "com.ss.hm.ugc.aweme": "抖音",
+  "com.tencent.mm": "微信",
+  "com.tencent.mobileqq": "QQ",
+  "com.huawei.appmarket": "应用市场",
+  "com.huawei.camera": "相机",
+  "com.android.settings": "设置",
+  "com.huawei.browser": "浏览器",
+  "com.huawei.health": "运动健康",
+  "com.huawei.music": "音乐",
+  "com.huawei.vmall": "华为商城"
+};
+
+// 全局函数用于打开链接
+window.openAppGallery = (appName: string) => {
+  open(`https://appgallery.huawei.com/search/${encodeURIComponent(appName)}`);
+};
+
+// 翻译函数
+function translate(text: string): string {
+  // 去除首尾的空格和分隔符
+  const cleanText = text.trim().replace(/^[-]+|[-]+$/g, '').trim();
+  
+  // 检查是否是应用ID，如果是则转换为应用名称
+  if (cleanText.startsWith("com.")) {
+    if (appIdToNameMap[cleanText]) {
+      const appName = appIdToNameMap[cleanText];
+      return `<span class="text-blue-400 hover:underline cursor-pointer" onclick="window.openAppGallery('${appName}')">${appName}</span> (${cleanText})`;
+    }
+  }
+  
+  if (translationMap[cleanText]) {
+    return translationMap[cleanText];
+  }
+  return text;
+}
+
+// 解析单个 section 的数据
+function parseSectionData(raw: string): Array<{ key: string; value: string; isSectionTitle?: boolean }> {
+  const items: Array<{ key: string; value: string; isSectionTitle?: boolean }> = [];
+  const lines = raw.split('\n');
+  
+  // 需要过滤掉的字段
+  const filteredKeys = [
+    'Usage',
+    '-input_simulate',
+    'simulate event from ohos core_service, supported events',
+    'BindTime',
+    'EndTime',
+    'SpendTime',
+    'login/logout/token_invalid'
+  ];
+  
+  // 过滤掉的前缀
+  const filteredPrefixes = [
+    '-input_simulate'
+  ];
+  
+  // 部分标题映射
+  const sectionTitles = {
+    'WifiDevice': 'WiFi 设备',
+    'WifiHotspot': 'WiFi 热点',
+    'WifiP2p': 'WiFi P2P',
+    'WifiScan': 'WiFi 扫描',
+    'NetConnManager': '网络连接管理',
+    'NetStatsManager': '网络统计管理',
+    'NetTetheringManager': '网络共享管理',
+    'NetsysNative': '网络系统',
+    'AVCodecService': '音视频编解码服务',
+    'MediaKeySystemService': '媒体密钥系统服务',
+    'TelephonyCoreService': '电话核心服务'
+  };
+  
+  for (const line of lines) {
+    const trimmedLine = line.trim();
+    
+    // 跳过空行
+    if (!trimmedLine) {
+      continue;
+    }
+    
+    // 处理分隔线和部分标题
+    if (trimmedLine.startsWith('----------------------------------')) {
+      // 查找下一行作为部分标题
+      const nextLineIndex = lines.indexOf(line) + 1;
+      if (nextLineIndex < lines.length) {
+        const nextLine = lines[nextLineIndex].trim();
+        if (nextLine && !nextLine.startsWith('----------------------------------')) {
+          // 检查是否是已知的部分标题
+          for (const [key, title] of Object.entries(sectionTitles)) {
+            if (nextLine.includes(key)) {
+              items.push({ 
+                key: title, 
+                value: '', 
+                isSectionTitle: true 
+              });
+              break;
+            }
+          }
+        }
+      }
+      continue;
+    }
+    
+    // 跳过以特定前缀开头的行
+    if (filteredPrefixes.some(prefix => trimmedLine.startsWith(prefix))) {
+      continue;
+    }
+    
+    // 处理不同的分隔符：冒号、连字符、等号
+    let separatorIndex = -1;
+    let separator = '';
+    
+    // 优先找冒号
+    const colonIndex = trimmedLine.indexOf(':');
+    const hyphenIndex = trimmedLine.indexOf(' - ');
+    const equalIndex = trimmedLine.indexOf(' = ');
+    
+    if (hyphenIndex > 0) {
+      separatorIndex = hyphenIndex;
+      separator = ' - ';
+    } else if (equalIndex > 0) {
+      separatorIndex = equalIndex;
+      separator = ' = ';
+    } else if (colonIndex > 0) {
+      separatorIndex = colonIndex;
+      separator = ':';
+    }
+    
+    if (separatorIndex > 0) {
+      let key = trimmedLine.slice(0, separatorIndex).trim();
+      const value = trimmedLine.slice(separatorIndex + separator.length).trim();
+      
+      // 过滤掉不需要的字段
+      if (filteredKeys.includes(key)) {
+        continue;
+      }
+      
+      // 将 "支持 5G" 改为 "是否打开5G"
+      if (key === 'IsNrSupported') {
+        key = '是否打开5G';
+      }
+      
+      if (key && value) {
+        items.push({ key, value });
+      }
+    } else if (trimmedLine && !trimmedLine.startsWith('[') && !trimmedLine.endsWith(']')) {
+      // 可能是小标题，不作为键值对处理
+    }
+  }
+  
+  return items;
+}
+
+// 环境变量表组件
+const EnvironmentVariablesTable: React.FC = () => {
+  // 环境变量数据
+  const envVars = [
+    { name: "BASHPID", value: "51924" },
+    { name: "DOWNLOAD_CACHE", value: "/data/cache" },
+    { name: "EPOCHREALTIME", value: "1776829957.971719" },
+    { name: "HOME", value: "/root" },
+    { name: "IFS", value: "$' \\t\\n'" },
+    { name: "KSHEGID", value: "2000" },
+    { name: "KSHGID", value: "2000" },
+    { name: "KSHUID", value: "2000" },
+    { name: "KSH_VERSION", value: "@(#)MIRBSD KSH R59 2020/10/31" },
+    { name: "LANG", value: "en_US.UTF-8" },
+    { name: "MALI_REPORT_MEM_USAGE", value: "1" },
+    { name: "OHOS_SOCKET_hdcd", value: "14" },
+    { name: "OLDPWD", value: "/" },
+    { name: "OPTIND", value: "1" },
+    { name: "PATH", value: "/usr/local/bin:/bin:/usr/bin:/system/bin:/vendor/bin" },
+    { name: "PATHSEP", value: ":" },
+    { name: "PGRP", value: "51924" },
+    { name: "PIPESTATUS", value: "0" },
+    { name: "PPID", value: "1907" },
+    { name: "PS1", value: "$ " },
+    { name: "PS2", value: "> " },
+    { name: "PS3", value: "#? " },
+    { name: "PS4", value: "+ " },
+    { name: "PULSE_RUNTIME_PATH", value: "/data/data/.pulse_dir/runtime" },
+    { name: "PULSE_STATE_PATH", value: "/data/data/.pulse_dir/state" },
+    { name: "PWD", value: "/" },
+    { name: "RANDOM", value: "9565" },
+    { name: "SECONDS", value: "0" },
+    { name: "SHLVL", value: "1" },
+    { name: "TERM", value: "ansi" },
+    { name: "TMOUT", value: "0" },
+    { name: "TMP", value: "/data/local/mtp_tmp/" },
+    { name: "TMPDIR", value: "/data/local/tmp" },
+    { name: "UBSAN_OPTIONS", value: "print_stacktrace=1:print_module_map=2:log_exe_name=1" },
+    { name: "USER", value: "root" },
+    { name: "USER_ID", value: "2000" },
+    { name: "UV_THREADPOOL_SIZE", value: "16" }
+  ];
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="border-b border-dark-700/50">
+            <th className="text-left py-2 text-dark-400 font-medium">变量名</th>
+            <th className="text-left py-2 text-dark-400 font-medium">值</th>
+          </tr>
+        </thead>
+        <tbody>
+          {envVars.map((env, idx) => (
+            <tr key={idx} className="border-b border-dark-700/30">
+              <td className="py-2 text-dark-300 font-medium">{env.name}</td>
+              <td className="py-2 text-dark-200 font-mono truncate max-w-[400px]">{env.value}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 };

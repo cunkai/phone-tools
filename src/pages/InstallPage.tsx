@@ -101,7 +101,33 @@ const InstallPage: React.FC = () => {
     if (!currentDevice || !filePath) return;
     if (currentPlatform === "harmonyos") {
       const { hdcInstallApp } = await import("../api/adb");
-      await hdcInstallApp(currentDevice, filePath);
+      try {
+        setIsParsing(true); // 使用isParsing作为安装中状态
+        const result = await hdcInstallApp(currentDevice, filePath);
+        // 解析安装结果
+        if (result.includes("install bundle successfully")) {
+          // 安装成功
+          resetInstall();
+          setFilePath("");
+          // 显示成功提示
+          alert("安装成功");
+        } else if (result.includes("error: failed to install bundle")) {
+          // 安装失败
+          // 提取错误码和错误原因
+          const codeMatch = result.match(/code:(\d+)/);
+          const errorMatch = result.match(/error: ([^\n]+)/);
+          const code = codeMatch ? codeMatch[1] : "未知";
+          const error = errorMatch ? errorMatch[1] : "未知错误";
+          alert(`安装失败\n错误码: ${code}\n错误原因: ${error}`);
+        } else {
+          // 其他情况
+          alert(`安装结果: ${result}`);
+        }
+      } catch (error) {
+        alert(`安装失败: ${error instanceof Error ? error.message : "未知错误"}`);
+      } finally {
+        setIsParsing(false);
+      }
     } else {
       await installApp(currentDevice, filePath);
     }
@@ -117,6 +143,8 @@ const InstallPage: React.FC = () => {
     if (!apkInfo?.min_sdk_version || !currentDevice) return false;
     const device = devices.find((d) => d.serial === currentDevice);
     if (!device?.sdk_version) return false;
+    // HarmonyOS 暂时不判断系统版本过低
+    if (device.platform === "harmonyos") return false;
     const deviceSdk = parseInt(device.sdk_version, 10);
     if (isNaN(deviceSdk) || deviceSdk <= 0) return false;
     return deviceSdk < apkInfo.min_sdk_version!;

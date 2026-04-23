@@ -5,6 +5,12 @@ import { useAutomationStore } from "../store/automationStore";
 import { hdcScreenshot, takeScreenshot, getInstalledApps, hdcGetInstalledApps } from "../api/adb";
 import type { InstalledApp } from "../types";
 import type { ActionBlock, ActionParams, AutomationCanvas, RunConfig, ExecutionState } from "../types/automation";
+import * as dialog from "@tauri-apps/plugin-dialog";
+import { writeFile } from "@tauri-apps/plugin-fs";
+import InputDialog from "../components/InputDialog";
+import QueuePanel from "../components/QueuePanel";
+import InsertDataDialog from "../components/InsertDataDialog";
+import { CoordInput } from "../components/CoordInput";
 
 // ==================== 块类型定义 ====================
 
@@ -31,6 +37,7 @@ const BLOCK_TYPES: BlockTypeItem[] = [
   { type: "open_app", color: "text-fuchsia-400", bgColor: "bg-fuchsia-500/10", borderColor: "border-fuchsia-500/30" },
   { type: "delay", color: "text-gray-400", bgColor: "bg-gray-500/10", borderColor: "border-gray-500/30" },
   { type: "condition", color: "text-red-400", bgColor: "bg-red-500/10", borderColor: "border-red-500/30" },
+  { type: "code", color: "text-blue-400", bgColor: "bg-blue-500/10", borderColor: "border-blue-500/30" },
 ];
 
 // ==================== 块图标 SVG ====================
@@ -98,9 +105,15 @@ const BlockIcon: React.FC<{ type: string; className?: string }> = ({ type, class
     case "condition":
       return (
         <svg className={className} viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-          <polyline points="6 4 2 10 6 16" />
-          <polyline points="14 4 18 10 14 16" />
-          <line x1="7" y1="10" x2="13" y2="10" />
+          <circle cx="10" cy="10" r="8" />
+          <path d="M10 6v4l3 3" />
+        </svg>
+      );
+    case "code":
+      return (
+        <svg className={className} viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5">
+          <polyline points="16 18 22 12 16 6" />
+          <polyline points="8 6 2 12 8 18" />
         </svg>
       );
     case "media_key":
@@ -194,6 +207,8 @@ function getBlockDescription(block: ActionBlock, t: (key: string) => string): st
       return `${t("automation.delay")} ${p.delay.ms}ms`;
     case "condition":
       return `${t("automation.condition")} (${p.condition.target.x}, ${p.condition.target.y})`;
+    case "code":
+      return `${t("automation.code")}`;
     default:
       return block.type;
   }
@@ -233,13 +248,23 @@ const CanvasList: React.FC = () => {
     useAutomationStore();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
+  const [isInputDialogOpen, setIsInputDialogOpen] = useState(false);
 
   const handleNewCanvas = useCallback(() => {
-    const name = prompt(t("automation.canvasName"));
-    if (name && name.trim()) {
-      createCanvas(name.trim());
-    }
-  }, [createCanvas, t]);
+    console.log("[CanvasList] handleNewCanvas 被调用");
+    setIsInputDialogOpen(true);
+  }, []);
+
+  const handleConfirmNewCanvas = useCallback((name: string) => {
+    console.log("[CanvasList] handleConfirmNewCanvas被调用, 名称:", name);
+    setIsInputDialogOpen(false);
+    createCanvas(name.trim());
+  }, [createCanvas]);
+
+  const handleCancelNewCanvas = useCallback(() => {
+    console.log("[CanvasList] handleCancelNewCanvas被调用");
+    setIsInputDialogOpen(false);
+  }, []);
 
   const handleDoubleClick = useCallback(
     (canvasId: string, currentName: string) => {
@@ -261,7 +286,21 @@ const CanvasList: React.FC = () => {
 
   return (
     <div className="flex flex-col gap-1">
-      <span className="text-xs text-dark-500 font-medium mb-1 block">{t("automation.canvasList")}</span>
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-xs text-dark-500 font-medium block">{t("automation.canvasList")}</span>
+        <button
+          onClick={() => {
+            handleNewCanvas();
+          }}
+          className="text-xs text-accent-400 hover:text-accent-300 transition-colors"
+          title={t("automation.newCanvas")}
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <line x1="12" y1="5" x2="12" y2="19" />
+            <line x1="5" y1="12" x2="19" y2="12" />
+          </svg>
+        </button>
+      </div>
       {canvases.length === 0 ? (
         <p className="text-xs text-dark-600 py-2">{t("automation.noCanvas")}</p>
       ) : (
@@ -313,6 +352,17 @@ const CanvasList: React.FC = () => {
           ))}
         </div>
       )}
+
+      {/* 输入对话框 */}
+      <InputDialog
+        isOpen={isInputDialogOpen}
+        title={t("automation.newCanvas")}
+        message={t("automation.canvasName")}
+        placeholder={t("automation.canvasName")}
+        defaultValue={`画布 ${Date.now()}`}
+        onConfirm={handleConfirmNewCanvas}
+        onCancel={handleCancelNewCanvas}
+      />
     </div>
   );
 };
@@ -471,6 +521,23 @@ const AutomationCanvas: React.FC = () => {
   const selectedBlockId = useAutomationStore((s) => s.selectedBlockId);
   const execution = useAutomationStore((s) => s.execution);
   const { selectBlock, removeBlock, moveBlock, duplicateBlock, updateBlock } = useAutomationStore();
+  const [isInputDialogOpen, setIsInputDialogOpen] = useState(false);
+
+  const handleNewCanvas = useCallback(() => {
+    console.log("[AutomationCanvas] handleNewCanvas 被调用");
+    setIsInputDialogOpen(true);
+  }, []);
+
+  const handleConfirmNewCanvas = useCallback((name: string) => {
+    console.log("[AutomationCanvas] handleConfirmNewCanvas被调用, 名称:", name);
+    setIsInputDialogOpen(false);
+    useAutomationStore.getState().createCanvas(name.trim());
+  }, []);
+
+  const handleCancelNewCanvas = useCallback(() => {
+    console.log("[AutomationCanvas] handleCancelNewCanvas被调用");
+    setIsInputDialogOpen(false);
+  }, []);
 
   if (!canvas) {
     return (
@@ -479,10 +546,7 @@ const AutomationCanvas: React.FC = () => {
           <p className="text-dark-500 text-sm mb-3">{t("automation.noCanvas")}</p>
           <button
             onClick={() => {
-              const name = prompt(t("automation.canvasName"));
-              if (name && name.trim()) {
-                useAutomationStore.getState().createCanvas(name.trim());
-              }
+              handleNewCanvas();
             }}
             className="px-4 py-2 rounded-lg bg-accent-500 text-white hover:bg-accent-600 transition-colors text-sm"
           >
@@ -555,26 +619,17 @@ const AutomationCanvas: React.FC = () => {
             </span>
 
             {/* 操作按钮（悬停显示） */}
-            <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+            <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
               {/* 禁用/启用 */}
               <button
                 onClick={(e) => {
                   e.stopPropagation();
                   updateBlock(block.id, { disabled: !block.disabled });
                 }}
-                className="p-1 rounded text-dark-500 hover:text-dark-300 transition-colors"
+                className="px-1.5 py-0.5 rounded text-[10px] text-dark-500 hover:text-dark-300 transition-colors"
                 title={t("automation.disabled")}
               >
-                <svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2">
-                  {block.disabled ? (
-                    <path d="M2 2h16v16H2z" />
-                  ) : (
-                    <>
-                      <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V3" />
-                      <path d="M9 3V1h6v2" />
-                    </>
-                  )}
-                </svg>
+                {block.disabled ? t("automation.enable") : t("automation.disable")}
               </button>
 
               {/* 复制 */}
@@ -583,13 +638,10 @@ const AutomationCanvas: React.FC = () => {
                   e.stopPropagation();
                   duplicateBlock(block.id);
                 }}
-                className="p-1 rounded text-dark-500 hover:text-dark-300 transition-colors"
+                className="px-1.5 py-0.5 rounded text-[10px] text-dark-500 hover:text-dark-300 transition-colors"
                 title={t("automation.duplicate")}
               >
-                <svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2">
-                  <rect x="6" y="6" width="12" height="12" rx="1.5" />
-                  <path d="M4 14H3a1.5 1.5 0 0 1-1.5-1.5V3A1.5 1.5 0 0 1 3 1.5h9.5A1.5 1.5 0 0 1 14 3v1" />
-                </svg>
+                {t("automation.duplicate")}
               </button>
 
               {/* 上移 */}
@@ -598,14 +650,11 @@ const AutomationCanvas: React.FC = () => {
                   e.stopPropagation();
                   if (index > 0) moveBlock(index, index - 1);
                 }}
-                className="p-1 rounded text-dark-500 hover:text-dark-300 transition-colors disabled:opacity-30"
+                className="px-1.5 py-0.5 rounded text-[10px] text-dark-500 hover:text-dark-300 transition-colors disabled:opacity-30"
                 disabled={index === 0}
                 title={t("automation.moveUp")}
               >
-                <svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                  <polyline points="10 4 6 10 10 10" />
-                  <line x1="6" y1="10" x2="14" y2="10" />
-                </svg>
+                {t("automation.moveUp")}
               </button>
 
               {/* 下移 */}
@@ -614,14 +663,11 @@ const AutomationCanvas: React.FC = () => {
                   e.stopPropagation();
                   if (index < blocks.length - 1) moveBlock(index, index + 1);
                 }}
-                className="p-1 rounded text-dark-500 hover:text-dark-300 transition-colors disabled:opacity-30"
+                className="px-1.5 py-0.5 rounded text-[10px] text-dark-500 hover:text-dark-300 transition-colors disabled:opacity-30"
                 disabled={index === blocks.length - 1}
                 title={t("automation.moveDown")}
               >
-                <svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                  <polyline points="10 16 6 10 10 10" />
-                  <line x1="6" y1="10" x2="14" y2="10" />
-                </svg>
+                {t("automation.moveDown")}
               </button>
 
               {/* 删除 */}
@@ -630,18 +676,26 @@ const AutomationCanvas: React.FC = () => {
                   e.stopPropagation();
                   removeBlock(block.id);
                 }}
-                className="p-1 rounded text-dark-500 hover:text-red-400 transition-colors"
+                className="px-1.5 py-0.5 rounded text-[10px] text-dark-500 hover:text-red-400 transition-colors"
                 title={t("automation.delete")}
               >
-                <svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2">
-                  <line x1="5" y1="5" x2="15" y2="15" />
-                  <line x1="15" y1="5" x2="5" y2="15" />
-                </svg>
+                {t("automation.delete")}
               </button>
             </div>
           </div>
         );
       })}
+
+      {/* 输入对话框 */}
+      <InputDialog
+        isOpen={isInputDialogOpen}
+        title={t("automation.newCanvas")}
+        message={t("automation.canvasName")}
+        placeholder={t("automation.canvasName")}
+        defaultValue={`画布 ${Date.now()}`}
+        onConfirm={handleConfirmNewCanvas}
+        onCancel={handleCancelNewCanvas}
+      />
     </div>
   );
 };
@@ -791,13 +845,15 @@ const ShellResult: React.FC<{ blockId: string }> = ({ blockId }) => {
 
 // ==================== 属性编辑面板 (BlockInspector) ====================
 
-const BlockInspector: React.FC<{ onCoordInput?: (x: number, y: number) => void; platform?: string; onStartPickColor?: (target: string) => void }> = ({ onCoordInput, platform, onStartPickColor }) => {
+const BlockInspector: React.FC<{ onCoordInput?: (coord: any) => void; platform?: string; onStartPickColor?: (target: string) => void }> = ({ onCoordInput, platform, onStartPickColor }) => {
   const { t } = useTranslation();
   const selectedBlockId = useAutomationStore((s) => s.selectedBlockId);
   const canvas = useAutomationStore((s) => s.activeCanvas());
   const updateBlock = useAutomationStore((s) => s.updateBlock);
   const homeCache = useDeviceStore((s) => s.homeCache);
   const currentDevice = useDeviceStore((s) => s.currentDevice);
+  const [insertDataDialogOpen, setInsertDataDialogOpen] = useState(false);
+  const [macroDialogOpen, setMacroDialogOpen] = useState(false);
 
   const block = canvas?.blocks.find((b) => b.id === selectedBlockId);
   const p = block?.params as any;
@@ -829,11 +885,18 @@ const BlockInspector: React.FC<{ onCoordInput?: (x: number, y: number) => void; 
 
   // 坐标输入时触发浮窗动画
   const handleCoordChange = useCallback((key: string, value: string) => {
-    updateParams(key, value);
+    // 智能处理输入值：去除前导零，保持空字符串为空
+    let processedValue = value;
+    if (value !== "") {
+      // 去除前导零，但保留单个0
+      processedValue = value.replace(/^0+(?!$)/, '');
+    }
+    
+    updateParams(key, processedValue);
     if (!onCoordInput) return;
     const parts = key.split(".");
     if (parts.length >= 2 && (parts[parts.length - 1] === "x" || parts[parts.length - 1] === "y")) {
-      const numVal = Number(value);
+      const numVal = Number(processedValue);
       if (isNaN(numVal)) return;
       // 用输入的值直接计算坐标，不依赖 block（避免闭包/更新时序问题）
       const isX = parts[parts.length - 1] === "x";
@@ -844,9 +907,7 @@ const BlockInspector: React.FC<{ onCoordInput?: (x: number, y: number) => void; 
       let target = latestParams;
       for (const k of parts.slice(0, -1)) target = target?.[k];
       if (!target) return;
-      const x = Number(target.x) || 0;
-      const y = Number(target.y) || 0;
-      onCoordInput(x, y);
+      onCoordInput(target);
     }
   }, [onCoordInput, block?.id, updateParams]);
 
@@ -895,50 +956,22 @@ const BlockInspector: React.FC<{ onCoordInput?: (x: number, y: number) => void; 
 
       {/* 根据类型显示不同参数 */}
       {(block.type === "tap" || block.type === "double_tap") && (
-        <div className="grid grid-cols-2 gap-2">
-          <div>
-            <label className={labelCls}>{t("automation.x")}</label>
-            <input
-              type="number"
-              value={p[block.type].x}
-              onChange={(e) => handleCoordChange(`${block.type}.x`, e.target.value)}
-              className={inputCls}
-            />
-          </div>
-          <div>
-            <label className={labelCls}>{t("automation.y")}</label>
-            <input
-              type="number"
-              value={p[block.type].y}
-              onChange={(e) => handleCoordChange(`${block.type}.y`, e.target.value)}
-              className={inputCls}
-            />
-          </div>
-        </div>
+        <CoordInput
+          value={p[block.type]}
+          onChange={(newValue) => updateParams(block.type, newValue)}
+          onCoordInput={onCoordInput}
+          label={block.type === "tap" ? t("automation.tap") : t("automation.double_tap")}
+        />
       )}
 
       {block.type === "long_press" && (
         <>
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <label className={labelCls}>{t("automation.x")}</label>
-              <input
-                type="number"
-                value={p.long_press.x}
-                onChange={(e) => handleCoordChange("long_press.x", e.target.value)}
-                className={inputCls}
-              />
-            </div>
-            <div>
-              <label className={labelCls}>{t("automation.y")}</label>
-              <input
-                type="number"
-                value={p.long_press.y}
-                onChange={(e) => handleCoordChange("long_press.y", e.target.value)}
-                className={inputCls}
-              />
-            </div>
-          </div>
+          <CoordInput
+            value={p.long_press}
+            onChange={(newValue) => updateParams("long_press", newValue)}
+            onCoordInput={onCoordInput}
+            label={t("automation.long_press")}
+          />
           <div>
             <label className={labelCls}>{t("automation.duration")}</label>
             <input
@@ -953,46 +986,18 @@ const BlockInspector: React.FC<{ onCoordInput?: (x: number, y: number) => void; 
 
       {(block.type === "swipe" || block.type === "drag") && (
         <>
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <label className={labelCls}>{t("automation.fromX")}</label>
-              <input
-                type="number"
-                value={p[block.type].from.x}
-                onChange={(e) => handleCoordChange(`${block.type}.from.x`, e.target.value)}
-                className={inputCls}
-              />
-            </div>
-            <div>
-              <label className={labelCls}>{t("automation.fromY")}</label>
-              <input
-                type="number"
-                value={p[block.type].from.y}
-                onChange={(e) => handleCoordChange(`${block.type}.from.y`, e.target.value)}
-                className={inputCls}
-              />
-            </div>
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <label className={labelCls}>{t("automation.toX")}</label>
-              <input
-                type="number"
-                value={p[block.type].to.x}
-                onChange={(e) => handleCoordChange(`${block.type}.to.x`, e.target.value)}
-                className={inputCls}
-              />
-            </div>
-            <div>
-              <label className={labelCls}>{t("automation.toY")}</label>
-              <input
-                type="number"
-                value={p[block.type].to.y}
-                onChange={(e) => handleCoordChange(`${block.type}.to.y`, e.target.value)}
-                className={inputCls}
-              />
-            </div>
-          </div>
+          <CoordInput
+            value={p[block.type].from}
+            onChange={(newValue) => updateParams(`${block.type}.from`, newValue)}
+            onCoordInput={onCoordInput}
+            label={t("automation.from")}
+          />
+          <CoordInput
+            value={p[block.type].to}
+            onChange={(newValue) => updateParams(`${block.type}.to`, newValue)}
+            onCoordInput={onCoordInput}
+            label={t("automation.to")}
+          />
           <div>
             <label className={labelCls}>{t("automation.duration")}</label>
             <input
@@ -1345,26 +1350,12 @@ const BlockInspector: React.FC<{ onCoordInput?: (x: number, y: number) => void; 
 
       {block.type === "condition" && (
         <>
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <label className={labelCls}>{t("automation.targetX")}</label>
-              <input
-                type="number"
-                value={p.condition.target.x}
-                onChange={(e) => handleCoordChange("condition.target.x", e.target.value)}
-                className={inputCls}
-              />
-            </div>
-            <div>
-              <label className={labelCls}>{t("automation.targetY")}</label>
-              <input
-                type="number"
-                value={p.condition.target.y}
-                onChange={(e) => handleCoordChange("condition.target.y", e.target.value)}
-                className={inputCls}
-              />
-            </div>
-          </div>
+          <CoordInput
+            value={p.condition.target}
+            onChange={(newValue) => updateParams("condition.target", newValue)}
+            onCoordInput={onCoordInput}
+            label={t("automation.target")}
+          />
           <div>
             <div className="flex items-center justify-between mb-1">
               <label className="text-xs text-dark-400">{t("automation.expectedColor")} (RGBA)</label>
@@ -1381,8 +1372,8 @@ const BlockInspector: React.FC<{ onCoordInput?: (x: number, y: number) => void; 
                 </button>
               )}
             </div>
-            <div className="grid grid-cols-4 gap-1">
-              {(["r", "g", "b", "a"] as const).map((ch) => (
+            <div className="grid grid-cols-3 gap-1">
+              {(["r", "g", "b"] as const).map((ch) => (
                 <div key={ch}>
                   <label className="text-[10px] text-dark-500 mb-0.5 block uppercase">{ch}</label>
                   <input
@@ -1397,24 +1388,63 @@ const BlockInspector: React.FC<{ onCoordInput?: (x: number, y: number) => void; 
               ))}
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <label className={labelCls}>{t("automation.tolerance")}</label>
-              <input
-                type="number"
-                value={p.condition.tolerance || 30}
-                onChange={(e) => updateParams("condition.tolerance", e.target.value)}
-                className={inputCls}
-              />
+          <div>
+            <label className={labelCls}>{t("automation.tolerance")} (RGB)</label>
+            <div className="grid grid-cols-3 gap-2">
+              <div>
+                <label className="text-[10px] text-dark-500 mb-0.5 block uppercase">R</label>
+                <input
+                  type="number"
+                  value={p.condition.toleranceR || 10}
+                  onChange={(e) => updateParams("condition.toleranceR", e.target.value)}
+                  className={inputCls}
+                  min={0}
+                  max={255}
+                />
+              </div>
+              <div>
+                <label className="text-[10px] text-dark-500 mb-0.5 block uppercase">G</label>
+                <input
+                  type="number"
+                  value={p.condition.toleranceG || 10}
+                  onChange={(e) => updateParams("condition.toleranceG", e.target.value)}
+                  className={inputCls}
+                  min={0}
+                  max={255}
+                />
+              </div>
+              <div>
+                <label className="text-[10px] text-dark-500 mb-0.5 block uppercase">B</label>
+                <input
+                  type="number"
+                  value={p.condition.toleranceB || 10}
+                  onChange={(e) => updateParams("condition.toleranceB", e.target.value)}
+                  className={inputCls}
+                  min={0}
+                  max={255}
+                />
+              </div>
             </div>
-            <div>
-              <label className={labelCls}>{t("automation.timeout")}</label>
+          </div>
+          <div>
+            <label className={labelCls}>{t("automation.timeout")}</label>
+            <div className="flex items-center gap-2">
               <input
                 type="number"
                 value={p.condition.timeout || 5000}
                 onChange={(e) => updateParams("condition.timeout", e.target.value)}
-                className={inputCls}
+                className={`${inputCls} flex-1`}
+                disabled={p.condition.timeout === 0}
               />
+              <label className="flex items-center gap-1 text-xs text-dark-400">
+                <input
+                  type="checkbox"
+                  checked={p.condition.timeout === 0}
+                  onChange={(e) => updateParams("condition.timeout", e.target.checked ? 0 : 5000)}
+                  className="w-3 h-3 rounded border-dark-600 bg-dark-700 text-accent-500 focus:ring-accent-500"
+                />
+                不超时
+              </label>
             </div>
           </div>
           <div>
@@ -1427,6 +1457,280 @@ const BlockInspector: React.FC<{ onCoordInput?: (x: number, y: number) => void; 
             />
           </div>
         </>
+      )}
+
+      {block.type === "code" && (
+        <>
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <label className={labelCls}>{t("automation.codeContent")}</label>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setInsertDataDialogOpen(true)}
+                  className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] text-accent-400 hover:bg-accent-500/10 border border-accent-500/30 transition-colors"
+                  title={t("automation.insertData")}
+                >
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                    <polyline points="14 2 14 8 20 8" />
+                    <line x1="16" y1="13" x2="8" y2="13" />
+                    <line x1="16" y1="17" x2="8" y2="17" />
+                    <polyline points="10 9 9 9 8 9" />
+                  </svg>
+                  {t("automation.insertData")}
+                </button>
+                <button
+                  onClick={() => setMacroDialogOpen(true)}
+                  className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] text-blue-400 hover:bg-blue-500/10 border border-blue-500/30 transition-colors"
+                  title="插入宏"
+                >
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <polyline points="16 18 22 12 16 6" />
+                    <polyline points="8 6 2 12 8 18" />
+                  </svg>
+                  插入宏
+                </button>
+              </div>
+            </div>
+            <textarea
+              value={p.code.content}
+              onChange={(e) => updateParams("code.content", e.target.value)}
+              className={`${inputCls} resize-none h-40 font-mono`}
+              placeholder={t("automation.codePlaceholder")}
+              spellCheck={false}
+            />
+          </div>
+          {p.code.variables && p.code.variables.length > 0 && (
+            <div>
+              <div className="flex items-center gap-2 flex-wrap">
+                {(() => {
+                  // 变量去重，保留最后一个
+                  const uniqueVariables = new Map();
+                  p.code.variables.forEach((v: any) => {
+                    uniqueVariables.set(v.name, v);
+                  });
+                  return Array.from(uniqueVariables.values());
+                })().map((variable: any) => (
+                  <div key={variable.name} className="flex items-center gap-1 bg-dark-700/50 border border-dark-600 rounded px-2 py-1">
+                    <span className="text-xs text-dark-400">{variable.name}</span>
+                    <button
+                      onClick={() => {
+                        const uniqueVariables = new Map();
+                        p.code.variables.forEach((v: any) => {
+                          uniqueVariables.set(v.name, v);
+                        });
+                        uniqueVariables.delete(variable.name);
+                        const variables = Array.from(uniqueVariables.values());
+                        updateBlock(block.id, {
+                          params: {
+                            code: {
+                              ...p.code,
+                              variables
+                            }
+                          }
+                        });
+                      }}
+                      className="p-0.5 text-dark-500 hover:text-red-400 transition-colors"
+                    >
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <line x1="4" y1="4" x2="20" y2="20" />
+                        <line x1="20" y1="4" x2="4" y2="20" />
+                      </svg>
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          
+          {/* 执行代码预览 */}
+          <div className="mt-3">
+            <label className={labelCls}>执行预览</label>
+            <pre className="text-[11px] text-dark-300 bg-dark-900 border border-dark-700 rounded-md p-2 max-h-24 overflow-y-auto whitespace-pre-wrap break-all font-mono">
+              {(() => {
+                let preview = '';
+                if (p.code.variables && p.code.variables.length > 0) {
+                  preview += '// 变量值:\n';
+                  p.code.variables.forEach((v: any) => {
+                    const sourceType = v.source.sourceType || 'params';
+                    const typeLabel = sourceType === 'result' ? '执行结果' : '块参数';
+                    preview += `// const ${v.name} = /* 从 ${typeLabel} 中获取 */;\n`;
+                  });
+                  preview += '\n';
+                }
+                preview += p.code.content || '';
+                return preview;
+              })()}
+            </pre>
+          </div>
+        </>
+      )}
+
+      {/* 插入数据对话框 */}
+      <InsertDataDialog
+        isOpen={insertDataDialogOpen}
+        onClose={() => setInsertDataDialogOpen(false)}
+        onInsert={(blockId, property, variableName, sourceType) => {
+          if (!block) return;
+
+          // 检查变量名是否已存在
+          const existingVariables = p.code.variables || [];
+          const variableExists = existingVariables.some((v: any) => v.name === variableName);
+          
+          // 构建变量定义
+          const variables = variableExists 
+            ? existingVariables.map((v: any) => 
+                v.name === variableName 
+                  ? { ...v, source: { blockId, property, type: "string", sourceType } }
+                  : v
+              )
+            : [...existingVariables, {
+                name: variableName,
+                source: {
+                  blockId,
+                  property,
+                  type: "string",
+                  sourceType
+                }
+              }];
+
+          // 只更新 variables，不修改用户的代码内容
+          updateBlock(block.id, {
+            params: {
+              code: {
+                ...p.code,
+                variables
+              }
+            }
+          });
+        }}
+        blocks={canvas?.blocks || []}
+        currentBlockIndex={canvas?.blocks.findIndex(b => b.id === block?.id) || 0}
+      />
+
+      {/* 宏选择对话框 */}
+      {macroDialogOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="bg-dark-800 border border-dark-700 rounded-lg p-4 w-80">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-sm font-medium text-dark-200">选择宏</h3>
+              <button
+                onClick={() => setMacroDialogOpen(false)}
+                className="text-dark-500 hover:text-dark-300 transition-colors"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <line x1="18" y1="6" x2="6" y2="18" />
+                  <line x1="6" y1="6" x2="18" y2="18" />
+                </svg>
+              </button>
+            </div>
+            <div className="space-y-2">
+              {/* GOTO 宏 */}
+              <div className="p-3 bg-dark-700/50 border border-dark-600 rounded">
+                <div className="text-xs font-medium text-dark-200 mb-2">GOTO(blockIndex)</div>
+                <div className="text-xs text-dark-500 mb-3">跳转到指定编号的积木块执行</div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min="1"
+                    max={canvas?.blocks.length || 10}
+                    defaultValue="1"
+                    id="gotoBlockIndex"
+                    className="flex-1 px-2 py-1 rounded bg-dark-600 border border-dark-500 text-dark-200 text-xs focus:outline-none focus:border-blue-500"
+                  />
+                  <button
+                    onClick={() => {
+                      const blockIndex = parseInt((document.getElementById('gotoBlockIndex') as HTMLInputElement).value) || 1;
+                      if (block) {
+                        const newContent = p.code.content ? p.code.content + '\n' : '';
+                        updateBlock(block.id, {
+                          params: {
+                            code: {
+                              ...p.code,
+                              content: newContent + `// 跳转到第 ${blockIndex} 个积木块\nGOTO(${blockIndex - 1});`
+                            }
+                          }
+                        });
+                      }
+                      setMacroDialogOpen(false);
+                    }}
+                    className="px-2 py-1 rounded bg-blue-500/20 text-blue-400 text-xs hover:bg-blue-500/30 transition-colors"
+                  >
+                    插入
+                  </button>
+                </div>
+              </div>
+
+              {/* 其他宏 */}
+              <div className="p-3 bg-dark-700/50 border border-dark-600 rounded">
+                <div className="text-xs font-medium text-dark-200 mb-2">DELAY(ms)</div>
+                <div className="text-xs text-dark-500 mb-3">延迟指定毫秒数</div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min="1"
+                    defaultValue="1000"
+                    id="delayMs"
+                    className="flex-1 px-2 py-1 rounded bg-dark-600 border border-dark-500 text-dark-200 text-xs focus:outline-none focus:border-blue-500"
+                  />
+                  <button
+                    onClick={() => {
+                      const delayMs = parseInt((document.getElementById('delayMs') as HTMLInputElement).value) || 1000;
+                      if (block) {
+                        const newContent = p.code.content ? p.code.content + '\n' : '';
+                        updateBlock(block.id, {
+                          params: {
+                            code: {
+                              ...p.code,
+                              content: newContent + `// 延迟 ${delayMs}ms\nDELAY(${delayMs});`
+                            }
+                          }
+                        });
+                      }
+                      setMacroDialogOpen(false);
+                    }}
+                    className="px-2 py-1 rounded bg-blue-500/20 text-blue-400 text-xs hover:bg-blue-500/30 transition-colors"
+                  >
+                    插入
+                  </button>
+                </div>
+              </div>
+
+              <div className="p-3 bg-dark-700/50 border border-dark-600 rounded">
+                <div className="text-xs font-medium text-dark-200 mb-2">LOG(message)</div>
+                <div className="text-xs text-dark-500 mb-3">输出日志信息</div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    defaultValue="Hello World"
+                    id="logMessage"
+                    className="flex-1 px-2 py-1 rounded bg-dark-600 border border-dark-500 text-dark-200 text-xs focus:outline-none focus:border-blue-500"
+                  />
+                  <button
+                    onClick={() => {
+                      const message = (document.getElementById('logMessage') as HTMLInputElement).value || 'Hello World';
+                      if (block) {
+                        const newContent = p.code.content ? p.code.content + '\n' : '';
+                        updateBlock(block.id, {
+                          params: {
+                            code: {
+                              ...p.code,
+                              content: newContent + `// 输出日志\nLOG(\"${message}\");`
+                            }
+                          }
+                        });
+                      }
+                      setMacroDialogOpen(false);
+                    }}
+                    className="px-2 py-1 rounded bg-blue-500/20 text-blue-400 text-xs hover:bg-blue-500/30 transition-colors"
+                  >
+                    插入
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
@@ -1455,7 +1759,7 @@ const RunResultPanel: React.FC = () => {
                 </span>
                 {log.message && (
                   <pre className="text-[10px] text-dark-500 mt-0.5 whitespace-pre-wrap break-all font-mono max-h-16 overflow-y-auto">
-                    {log.message}
+                    {Array.isArray(log.message) ? log.message.join('\n') : log.message}
                   </pre>
                 )}
               </div>
@@ -1618,11 +1922,20 @@ const ExecutionPanel: React.FC<{ onToggleScreen: () => void; screenVisible: bool
 
 // ==================== 浮窗屏幕组件 ====================
 
+interface CoordinateMarker {
+  x: number;
+  y: number;
+  type: 'point' | 'rect' | 'circle';
+  width?: number;  // 矩形宽度（归一化 0-1）
+  height?: number; // 矩形高度（归一化 0-1）
+  radius?: number; // 圆形半径（归一化 0-1）
+}
+
 interface FloatingScreenProps {
   /** 外部触发展开（如坐标输入时） */
   expandTrigger: number;
   /** 坐标动画点 [{x, y}]（归一化 0-1） */
-  coordinateMarkers: Array<{ x: number; y: number }>;
+  coordinateMarkers: CoordinateMarker[];
   /** 取色回调，传入 RGBA 对象 */
   onPickColor?: (color: { r: number; g: number; b: number; a: number }) => void;
   /** 是否处于取色模式 */
@@ -1639,15 +1952,20 @@ const FloatingScreen: React.FC<FloatingScreenProps> = ({ expandTrigger, coordina
   const { t } = useTranslation();
   const currentDevice = useDeviceStore((s) => s.currentDevice);
   const devices = useDeviceStore((s) => s.devices);
+  const homeCache = useDeviceStore((s) => s.homeCache);
   const currentPlatform = devices.find((d) => d.serial === currentDevice)?.platform || "android";
 
   const [screenshot, setScreenshot] = useState<string>("");
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [refreshInterval, setRefreshInterval] = useState(1000);
-  const [markers, setMarkers] = useState<Array<{ x: number; y: number; id: number }>>([]);
+  const [markers, setMarkers] = useState<Array<CoordinateMarker & { id: number }>>([]);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const markerIdRef = useRef(0);
-  const containerRef = useRef<HTMLDivElement>(null);
+  const imgContainerRef = useRef<HTMLDivElement>(null);
+  const imgRef = useRef<HTMLImageElement>(null);
+  const [imageSize, setImageSize] = useState({ width: 0, height: 0 });
+  const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
+  const [deviceResolution, setDeviceResolution] = useState({ width: 1080, height: 2400 });
 
   // 截图函数
   const doScreenshot = useCallback(async () => {
@@ -1660,8 +1978,21 @@ const FloatingScreen: React.FC<FloatingScreenProps> = ({ expandTrigger, coordina
     } catch {}
   }, [currentDevice, currentPlatform]);
 
-  // 可见时截图
-  useEffect(() => { if (visible) doScreenshot(); }, [visible, doScreenshot]);
+  // 可见时截图和获取设备分辨率
+  useEffect(() => {
+    if (visible && currentDevice) {
+      doScreenshot();
+      // 获取设备实际分辨率
+      const res = homeCache[currentDevice]?.screenRes || "";
+      const m = res.match(/(\d+)x(\d+)/);
+      if (m) {
+        setDeviceResolution({
+          width: parseInt(m[1]),
+          height: parseInt(m[2])
+        });
+      }
+    }
+  }, [visible, doScreenshot, currentDevice, homeCache]);
 
   // 自动刷新
   useEffect(() => {
@@ -1681,10 +2012,15 @@ const FloatingScreen: React.FC<FloatingScreenProps> = ({ expandTrigger, coordina
 
   // 坐标标记动画
   useEffect(() => {
+    console.log('[FloatingScreen] 接收到坐标标记:', coordinateMarkers);
     if (coordinateMarkers.length > 0) {
       const newMarkers = coordinateMarkers.map((m) => ({ ...m, id: markerIdRef.current++ }));
+      console.log('[FloatingScreen] 处理后的标记:', newMarkers);
       setMarkers(newMarkers);
-      setTimeout(() => setMarkers([]), 2000);
+      // 矩形和圆形标记显示时间更长
+      const displayTime = coordinateMarkers.some(m => m.type !== 'point') ? 5000 : 2000;
+      console.log('[FloatingScreen] 标记显示时间:', displayTime);
+      setTimeout(() => setMarkers([]), displayTime);
     }
   }, [coordinateMarkers]);
 
@@ -1714,10 +2050,57 @@ const FloatingScreen: React.FC<FloatingScreenProps> = ({ expandTrigger, coordina
     }
   }, [pickColorMode, doScreenshot, visible]);
 
+  // 图片加载时更新尺寸
+  const handleImageLoad = useCallback((e: React.SyntheticEvent<HTMLImageElement>) => {
+    const img = e.currentTarget;
+    setImageSize({ width: img.naturalWidth, height: img.naturalHeight });
+  }, []);
+
+  // 监听容器尺寸变化
+  useEffect(() => {
+    if (!imgContainerRef.current || !visible) return;
+
+    const resizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        setContainerSize({
+          width: entry.contentRect.width,
+          height: entry.contentRect.height
+        });
+      }
+    });
+
+    resizeObserver.observe(imgContainerRef.current);
+    return () => resizeObserver.disconnect();
+  }, [visible]);
+
+  // 计算图片在容器中的实际位置和尺寸（考虑 object-contain）
+  const getImageDisplayRect = useCallback(() => {
+    if (imageSize.width === 0 || imageSize.height === 0 || containerSize.width === 0 || containerSize.height === 0) {
+      return { x: 0, y: 0, width: 0, height: 0 };
+    }
+
+    const imageRatio = imageSize.width / imageSize.height;
+    const containerRatio = containerSize.width / containerSize.height;
+
+    let displayWidth, displayHeight;
+    if (imageRatio > containerRatio) {
+      displayWidth = containerSize.width;
+      displayHeight = containerSize.width / imageRatio;
+    } else {
+      displayHeight = containerSize.height;
+      displayWidth = containerSize.height * imageRatio;
+    }
+
+    const x = (containerSize.width - displayWidth) / 2;
+    const y = (containerSize.height - displayHeight) / 2;
+
+    return { x, y, width: displayWidth, height: displayHeight };
+  }, [imageSize, containerSize]);
+
   if (!currentDevice || !visible) return null;
 
   return (
-    <div ref={containerRef} className="flex-1 flex flex-col overflow-hidden">
+    <div className="flex-1 flex flex-col overflow-hidden">
       {/* 工具栏 */}
       <div className="flex items-center justify-between px-2 py-1 bg-dark-800/80 border-b border-dark-700/50 shrink-0">
         <div className="flex items-center gap-1.5">
@@ -1772,30 +2155,131 @@ const FloatingScreen: React.FC<FloatingScreenProps> = ({ expandTrigger, coordina
       )}
       {/* 屏幕内容 */}
       <div className="flex-1 flex items-center justify-center bg-black/50 overflow-hidden p-2">
-        <div className="relative w-full h-full">
+        <div ref={imgContainerRef} className="relative w-full h-full">
           {screenshot ? (
             <img
+              ref={imgRef}
               src={`data:image/jpeg;base64,${screenshot}`}
               alt="screen"
               className={`w-full h-full object-contain bg-black rounded ${pickColorMode ? "cursor-crosshair" : ""}`}
               draggable={false}
               onClick={handleScreenClick}
+              onLoad={handleImageLoad}
             />
           ) : (
             <div className="w-full h-full bg-dark-800 flex items-center justify-center rounded">
               <span className="text-xs text-dark-500">{t("common.loading")}</span>
             </div>
           )}
-          {markers.map((m) => (
-            <div
-              key={m.id}
-              className="absolute pointer-events-none"
-              style={{ left: `${m.x * 100}%`, top: `${m.y * 100}%`, transform: "translate(-50%, -50%)" }}
-            >
-              <div className="w-6 h-6 -ml-3 -mt-3 rounded-full border-2 border-red-400 bg-red-400/30 animate-ping" />
-              <div className="absolute inset-0 w-6 h-6 -ml-3 -mt-3 rounded-full border-2 border-red-400" />
-            </div>
-          ))}
+          {markers.map((m) => {
+            const rect = getImageDisplayRect();
+            console.log('[FloatingScreen] 渲染标记:', m, 'rect:', rect, 'imageSize:', imageSize);
+            if (rect.width === 0 || rect.height === 0 || imageSize.width === 0 || imageSize.height === 0) {
+              console.log('[FloatingScreen] 跳过渲染：尺寸为0');
+              return null;
+            }
+            
+            // 计算设备坐标到截图坐标的映射
+            // m.x 和 m.y 是相对于设备实际分辨率的归一化坐标 (0-1)
+            
+            // 获取设备实际分辨率和截图分辨率
+            const deviceWidth = deviceResolution.width;
+            const deviceHeight = deviceResolution.height;
+            const screenshotWidth = imageSize.width;
+            const screenshotHeight = imageSize.height;
+            
+            // 计算设备和截图的宽高比
+            const deviceRatio = deviceWidth / deviceHeight;
+            const screenshotRatio = screenshotWidth / screenshotHeight;
+            
+            let adjustedX = m.x;
+            let adjustedY = m.y;
+            let adjustedWidth = m.width || 0;
+            let adjustedHeight = m.height || 0;
+            let adjustedRadius = m.radius || 0;
+            
+            // 处理宽高比差异
+            if (deviceRatio > screenshotRatio) {
+              // 设备更宽，截图在宽度方向被裁剪或压缩
+              // 调整X坐标和宽度
+              const scale = screenshotRatio / deviceRatio;
+              const offset = (1 - scale) / 2;
+              adjustedX = m.x * scale + offset;
+              adjustedWidth = (m.width || 0) * scale;
+              adjustedRadius = (m.radius || 0) * scale;
+            } else if (deviceRatio < screenshotRatio) {
+              // 设备更高，截图在高度方向被裁剪或压缩
+              // 调整Y坐标和高度
+              const scale = deviceRatio / screenshotRatio;
+              const offset = (1 - scale) / 2;
+              adjustedY = m.y * scale + offset;
+              adjustedHeight = (m.height || 0) * scale;
+              adjustedRadius = (m.radius || 0) * scale;
+            }
+            
+            // 确保坐标在0-1范围内
+            adjustedX = Math.max(0, Math.min(1, adjustedX));
+            adjustedY = Math.max(0, Math.min(1, adjustedY));
+            
+            // 转换为屏幕显示坐标
+            const left = rect.x + adjustedX * rect.width;
+            const top = rect.y + adjustedY * rect.height;
+            const width = adjustedWidth * rect.width;
+            const height = adjustedHeight * rect.height;
+            const radius = adjustedRadius * Math.min(rect.width, rect.height);
+            
+            console.log('[FloatingScreen] 计算后的坐标:', { left, top, width, height, radius });
+            
+            // 渲染不同类型的标记
+            if (m.type === 'point' || m.type === 'rect' || m.type === 'circle') {
+              return (
+                <div
+                  key={m.id}
+                  className="absolute pointer-events-none"
+                  style={{ left: `${left}px`, top: `${top}px`, transform: "translate(-50%, -50%)", zIndex: 1000 }}
+                >
+                  <div className="w-6 h-6 rounded-full border-2 border-red-400 bg-red-400/30 animate-ping" />
+                  <div className="absolute inset-0 w-6 h-6 rounded-full border-2 border-red-400" />
+                </div>
+              );
+            } else if (m.type === 'rect') {
+              return (
+                <div
+                  key={m.id}
+                  className="absolute pointer-events-none"
+                  style={{ 
+                    left: `${left}px`, 
+                    top: `${top}px`, 
+                    width: `${width}px`, 
+                    height: `${height}px`,
+                    zIndex: 1000
+                  }}
+                >
+                  <div className="w-full h-full border-2 border-blue-400 bg-blue-400/20" />
+                  <div className="absolute inset-0 w-full h-full border-2 border-blue-400 animate-pulse" />
+                </div>
+              );
+            } else if (m.type === 'circle') {
+              return (
+                <div
+                  key={m.id}
+                  className="absolute pointer-events-none"
+                  style={{ 
+                    left: `${left}px`, 
+                    top: `${top}px`, 
+                    width: `${radius * 2}px`, 
+                    height: `${radius * 2}px`,
+                    transform: "translate(-50%, -50%)",
+                    zIndex: 1000
+                  }}
+                >
+                  <div className="w-full h-full rounded-full border-2 border-green-400 bg-green-400/20" />
+                  <div className="absolute inset-0 w-full h-full rounded-full border-2 border-green-400 animate-pulse" />
+                </div>
+              );
+            }
+            return null;
+          })}
         </div>
       </div>
     </div>
@@ -1807,16 +2291,30 @@ const FloatingScreen: React.FC<FloatingScreenProps> = ({ expandTrigger, coordina
 const AutomationHome: React.FC<{ onEnterEditor: () => void }> = ({ onEnterEditor }) => {
   const { t } = useTranslation();
   const canvases = useAutomationStore((s) => s.canvases);
-  const { createCanvas, switchCanvas, deleteCanvas, exportCanvas, importCanvas } = useAutomationStore();
+  const queue = useAutomationStore((s) => s.queue);
+  const { createCanvas, switchCanvas, deleteCanvas, exportCanvas, importCanvas, addToQueue, runQueue } = useAutomationStore();
+  const { currentDevice, devices } = useDeviceStore();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [isInputDialogOpen, setIsInputDialogOpen] = useState(false);
+  
+  const currentPlatform = devices.find((d) => d.serial === currentDevice)?.platform || "android";
 
   const handleNewCanvas = useCallback(() => {
-    const name = prompt(t("automation.canvasName"));
-    if (name && name.trim()) {
-      createCanvas(name.trim());
-      onEnterEditor();
-    }
-  }, [createCanvas, onEnterEditor, t]);
+    console.log("[AutomationHome] handleNewCanvas 被调用");
+    setIsInputDialogOpen(true);
+  }, []);
+
+  const handleConfirmNewCanvas = useCallback((name: string) => {
+    console.log("[AutomationHome] handleConfirmNewCanvas被调用, 名称:", name);
+    setIsInputDialogOpen(false);
+    createCanvas(name.trim());
+    onEnterEditor();
+  }, [createCanvas, onEnterEditor]);
+
+  const handleCancelNewCanvas = useCallback(() => {
+    console.log("[AutomationHome] handleCancelNewCanvas被调用");
+    setIsInputDialogOpen(false);
+  }, []);
 
   const handleImportCanvas = useCallback(() => {
     fileInputRef.current?.click();
@@ -1838,16 +2336,25 @@ const AutomationHome: React.FC<{ onEnterEditor: () => void }> = ({ onEnterEditor
     e.target.value = "";
   }, [importCanvas, onEnterEditor, t]);
 
-  const handleExport = useCallback((canvasId: string, canvasName: string) => {
+  const handleExport = useCallback(async (canvasId: string, canvasName: string) => {
     const json = exportCanvas(canvasId);
     if (!json) return;
-    const blob = new Blob([json], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${canvasName}.auto`;
-    a.click();
-    URL.revokeObjectURL(url);
+    
+    // 使用 Tauri 的文件保存对话框
+    const filePath = await dialog.save({
+      defaultPath: `${canvasName}.auto`,
+      filters: [{
+        name: "Automation Files",
+        extensions: ["auto"]
+      }]
+    });
+    
+    if (filePath) {
+      // 写入文件 - 将字符串转换为 Uint8Array
+      const encoder = new TextEncoder();
+      const data = encoder.encode(json);
+      await writeFile(filePath, data);
+    }
   }, [exportCanvas]);
 
   const handleOpenCanvas = useCallback((canvasId: string) => {
@@ -1857,10 +2364,22 @@ const AutomationHome: React.FC<{ onEnterEditor: () => void }> = ({ onEnterEditor
 
   const handleDelete = useCallback((e: React.MouseEvent, canvasId: string) => {
     e.stopPropagation();
-    if (confirm(t("automation.deleteConfirm"))) {
+    const confirmed = confirm(t("automation.deleteConfirm"));
+    if (confirmed) {
       deleteCanvas(canvasId);
     }
   }, [deleteCanvas, t]);
+
+  const handleAddToQueue = useCallback(async (e: React.MouseEvent, canvasId: string) => {
+    e.stopPropagation();
+    const isRunning = queue.some(item => item.status === "running");
+    addToQueue(canvasId);
+    
+    // 如果队列没有正在运行的项目且有设备连接，自动开始运行
+    if (!isRunning && currentDevice) {
+      await runQueue(currentPlatform, currentDevice);
+    }
+  }, [addToQueue, queue, currentDevice, currentPlatform, runQueue]);
 
   return (
     <div className="flex-1 flex flex-col items-center justify-center p-8 overflow-auto">
@@ -1875,7 +2394,9 @@ const AutomationHome: React.FC<{ onEnterEditor: () => void }> = ({ onEnterEditor
       {/* 顶部按钮 */}
       <div className="flex gap-3 mb-8">
         <button
-          onClick={handleNewCanvas}
+          onClick={() => {
+            handleNewCanvas();
+          }}
           className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-accent-500 text-white hover:bg-accent-600 transition-colors text-sm font-medium"
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -1928,6 +2449,15 @@ const AutomationHome: React.FC<{ onEnterEditor: () => void }> = ({ onEnterEditor
                 {/* hover 时显示的操作按钮 */}
                 <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                   <button
+                    onClick={(e) => handleAddToQueue(e, canvas.id)}
+                    className="p-1.5 rounded-md text-dark-400 hover:text-green-400 hover:bg-dark-600 transition-colors"
+                    title="添加到运行队列"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <polygon points="5,3 19,12 5,21" />
+                    </svg>
+                  </button>
+                  <button
                     onClick={(e) => { e.stopPropagation(); handleExport(canvas.id, canvas.name); }}
                     className="p-1.5 rounded-md text-dark-400 hover:text-accent-400 hover:bg-dark-600 transition-colors"
                     title={t("automation.exportCanvas")}
@@ -1954,6 +2484,17 @@ const AutomationHome: React.FC<{ onEnterEditor: () => void }> = ({ onEnterEditor
           </div>
         )}
       </div>
+
+      {/* 输入对话框 */}
+      <InputDialog
+        isOpen={isInputDialogOpen}
+        title={t("automation.newCanvas")}
+        message={t("automation.canvasName")}
+        placeholder={t("automation.canvasName")}
+        defaultValue={`画布 ${Date.now()}`}
+        onConfirm={handleConfirmNewCanvas}
+        onCancel={handleCancelNewCanvas}
+      />
     </div>
   );
 };
@@ -1975,18 +2516,48 @@ const AutomationPage: React.FC = () => {
 
   // 浮窗控制
   const [expandTrigger, setExpandTrigger] = useState(0);
-  const [coordMarkers, setCoordMarkers] = useState<Array<{ x: number; y: number }>>([]);
+  const [coordMarkers, setCoordMarkers] = useState<CoordinateMarker[]>([]);
   const [showScreen, setShowScreen] = useState(false);
 
   // 坐标输入时触发浮窗展开+动画
-  const onCoordInput = useCallback((x: number, y: number) => {
+  const onCoordInput = useCallback((coord: any) => {
+    console.log('[onCoordInput] 坐标输入:', coord);
     setShowScreen(true);
-    setExpandTrigger((v) => v + 1);
     const res = currentDevice ? (useDeviceStore.getState().homeCache[currentDevice]?.screenRes || "") : "";
     const m = res.match(/(\d+)x(\d+)/);
     const w = m ? parseInt(m[1]) : 1080;
     const h = m ? parseInt(m[2]) : 2400;
-    setCoordMarkers([{ x: x / w, y: y / h }]);
+    console.log('[onCoordInput] 设备分辨率:', { w, h });
+    
+    // 处理不同类型的坐标
+    let marker: CoordinateMarker;
+    
+    if (coord.type === 'random_rect') {
+      marker = {
+        type: 'rect',
+        x: Number(coord.x) / w,
+        y: Number(coord.y) / h,
+        width: Number(coord.rectParams?.width) / w,
+        height: Number(coord.rectParams?.height) / h,
+      };
+    } else if (coord.type === 'random_circle') {
+      marker = {
+        type: 'circle',
+        x: Number(coord.x) / w,
+        y: Number(coord.y) / h,
+        radius: Number(coord.circleParams?.radius) / Math.min(w, h),
+      };
+    } else {
+      // 固定坐标或其他类型
+      marker = {
+        type: 'point',
+        x: Number(coord.x) / w,
+        y: Number(coord.y) / h,
+      };
+    }
+    
+    console.log('[onCoordInput] 生成的标记:', marker);
+    setCoordMarkers([marker]);
   }, []);
 
   // 取色状态
@@ -2011,11 +2582,12 @@ const AutomationPage: React.FC = () => {
   const startPickColor = useCallback((target: string) => {
     setPickColorTarget(target);
     setPickColorMode(true);
+    setShowScreen(true);
   }, []);
 
   useEffect(() => {
     load();
-  }, [load]);
+  }, []);
 
   return (
     <div className="h-full flex flex-col animate-fade-in">
@@ -2066,8 +2638,8 @@ const AutomationPage: React.FC = () => {
           <AutomationCanvas />
           {/* 屏幕浮层（居中，占中间区域 90%） */}
           {showScreen && (
-            <div className="absolute inset-0 z-30 flex items-center justify-center p-[5%]">
-              <div className="relative w-full h-full bg-dark-800 border border-dark-700/50 rounded-xl shadow-2xl shadow-black/50 flex flex-col overflow-hidden">
+            <div className="absolute inset-0 z-30 flex items-center justify-center p-4">
+              <div className="relative w-[90%] h-[90%] bg-dark-800 border border-dark-700/50 rounded-xl shadow-2xl shadow-black/50 flex flex-col overflow-hidden">
                 <FloatingScreen expandTrigger={expandTrigger} coordinateMarkers={coordMarkers}
                   onPickColor={onPickColor} pickColorMode={pickColorMode}
                   onExitPickColor={() => setPickColorMode(false)}
@@ -2102,7 +2674,7 @@ const AutomationPage: React.FC = () => {
             strokeLinecap="round"
             className={`transition-transform ${canvasExpanded ? "rotate-180" : ""}`}
           >
-            <polyline points="5 7 10 12 15 7" />
+            <polyline points="5 13 10 8 15 13" />
           </svg>
           {canvasExpanded ? t("common.close") : t("automation.runResult")}
         </button>
@@ -2112,6 +2684,7 @@ const AutomationPage: React.FC = () => {
       </div>
         </>
       )}
+      <QueuePanel />
     </div>
   );
 };

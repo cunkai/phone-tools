@@ -2,12 +2,10 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
 import { useDeviceStore } from "../store/deviceStore";
-import ConnectionGuide from "../components/ConnectionGuide";
 import ConfirmDialog from "../components/ConfirmDialog";
-import ProgressBar from "../components/ProgressBar";
 import LoadingSpinner from "../components/LoadingSpinner";
 import type { AdbDevice } from "../types";
-import { getDeviceProps, getBatteryInfo, getStorageInfo, getMemoryInfo, getCpuArchitecture, getScreenResolution, takeScreenshot, hdcGetDeviceInfo, hdcScreenshot, exportBugreport, cancelBugreport, hdcGetBaseInfo, getAndroidBaseInfo, restartAdbService, restartHdcService } from "../api/adb";
+import { getDeviceProps, getBatteryInfo, getStorageInfo, getMemoryInfo, getCpuArchitecture, getScreenResolution, takeScreenshot, hdcGetDeviceInfo, hdcScreenshot, exportBugreport, cancelBugreport, hdcGetBaseInfo, getAndroidBaseInfo, restartAdbService, restartHdcService, reboot, rebootRecovery, rebootBootloader, hdcReboot, hdcRebootRecovery, hdcRebootBootloader } from "../api/adb";
 import { save } from "@tauri-apps/plugin-dialog";
 import { getLatestScreenshot, saveDeviceScreenshot } from "./ToolsPage";
 
@@ -25,9 +23,9 @@ const HomePage: React.FC = () => {
   const [detailHover, setDetailHover] = useState(false);
   const [showRawData, setShowRawData] = useState(false);
   const exportTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const [showGuide, setShowGuide] = useState(false);
   const [showRestartConfirm, setShowRestartConfirm] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [showRebootDialog, setShowRebootDialog] = useState(false);
 
   // 导出计时器
   useEffect(() => {
@@ -58,6 +56,43 @@ const HomePage: React.FC = () => {
 
   const device = devices.find((d) => d.serial === currentDevice);
   const cache = currentDevice ? homeCache[currentDevice] : null;
+  const currentPlatform = device?.platform || "android";
+
+  const handleRebootNormal = useCallback(async () => {
+    if (!currentDevice) return;
+    try {
+      if (currentPlatform === "harmonyos") {
+        await hdcReboot(currentDevice);
+      } else {
+        await reboot(currentDevice);
+      }
+    } catch {}
+    setShowRebootDialog(false);
+  }, [currentDevice, currentPlatform]);
+
+  const handleRebootRecovery = useCallback(async () => {
+    if (!currentDevice) return;
+    try {
+      if (currentPlatform === "harmonyos") {
+        await hdcRebootRecovery(currentDevice);
+      } else {
+        await rebootRecovery(currentDevice);
+      }
+    } catch {}
+    setShowRebootDialog(false);
+  }, [currentDevice, currentPlatform]);
+
+  const handleRebootBootloader = useCallback(async () => {
+    if (!currentDevice) return;
+    try {
+      if (currentPlatform === "harmonyos") {
+        await hdcRebootBootloader(currentDevice);
+      } else {
+        await rebootBootloader(currentDevice);
+      }
+    } catch {}
+    setShowRebootDialog(false);
+  }, [currentDevice, currentPlatform]);
 
   // 从 store 缓存或 devices 列表读取数据
   const deviceProps: AdbDevice | null = device || null;
@@ -195,7 +230,7 @@ const HomePage: React.FC = () => {
           getAndroidBaseInfo(currentDevice).then((info) => {
             setBaseInfo(info);
             // 同时解析到 cache
-            const parsed = parseAndroidBaseInfo(info);
+            const parsed = parseAndroidBaseInfo(info, t);
             const cacheData: Record<string, any> = { loaded: true, baseInfo: info };
             if (parsed.osVersion) cacheData.osVersion = parsed.osVersion;
             if (parsed.sdkVersion) cacheData.sdkVersion = parsed.sdkVersion;
@@ -228,8 +263,6 @@ const HomePage: React.FC = () => {
     }
   }, [currentDevice, refreshKey]);
 
-  const currentPlatform = devices.find((d) => d.serial === currentDevice)?.platform || "android";
-
   const parseStorageToBytes = (s: string): number => {
     if (!s) return 0;
     const num = parseFloat(s);
@@ -260,24 +293,82 @@ const HomePage: React.FC = () => {
         <div className="flex items-center justify-between mb-6">
           <h1 className="text-xl font-semibold text-dark-100">{t("nav.home")}</h1>
         </div>
-        <div className="flex-1 flex items-center justify-center">
-          <div className="text-center">
-            <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-dark-800 flex items-center justify-center">
-              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-dark-500">
-                <rect x="5" y="2" width="14" height="20" rx="2" ry="2" />
-                <line x1="12" y1="18" x2="12.01" y2="18" />
-              </svg>
+        <div className="flex-1 overflow-auto">
+          <div className="max-w-2xl mx-auto py-8">
+            {/* 等待设备标题 */}
+            <div className="text-center mb-8">
+              <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-dark-800 flex items-center justify-center">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-dark-500">
+                  <rect x="5" y="2" width="14" height="20" rx="2" ry="2" />
+                  <line x1="12" y1="18" x2="12.01" y2="18" />
+                </svg>
+              </div>
+              <p className="text-dark-400 mb-4">{t("device.noDevice")}</p>
             </div>
-            <p className="text-dark-400 mb-4">{t("device.noDevice")}</p>
-            <button
-              onClick={() => setShowGuide(true)}
-              className="px-4 py-2 rounded-lg bg-accent-500 text-white hover:bg-accent-600 transition-colors text-sm"
-            >
-              {t("device.connectionGuide")}
-            </button>
+
+            {/* 步骤1 */}
+            <div className="mb-8">
+              <div className="flex items-center gap-3 mb-2">
+                <span className="w-6 h-6 rounded-full bg-accent-500/20 text-accent-400 flex items-center justify-center text-sm font-semibold">1</span>
+                <h3 className="text-sm font-semibold text-dark-200">{t('guide.step1Title')}</h3>
+              </div>
+              <p className="text-sm text-dark-400 ml-9">{t('guide.step1Desc')}</p>
+            </div>
+
+            {/* 步骤2 */}
+            <div className="mb-8">
+              <div className="flex items-center gap-3 mb-2">
+                <span className="w-6 h-6 rounded-full bg-accent-500/20 text-accent-400 flex items-center justify-center text-sm font-semibold">2</span>
+                <h3 className="text-sm font-semibold text-dark-200">{t('guide.step2Title')}</h3>
+              </div>
+              <p className="text-sm text-dark-400 ml-9">{t('guide.step2Desc')}</p>
+            </div>
+
+            {/* 步骤3 */}
+            <div className="mb-8">
+              <div className="flex items-center gap-3 mb-2">
+                <span className="w-6 h-6 rounded-full bg-accent-500/20 text-accent-400 flex items-center justify-center text-sm font-semibold">3</span>
+                <h3 className="text-sm font-semibold text-dark-200">{t('guide.step3Title')}</h3>
+              </div>
+
+              {/* 方法一 USB */}
+              <div className="ml-9 mb-4">
+                <h4 className="text-xs font-semibold text-dark-300 mb-2">{t('guide.step3Title')}</h4>
+                <p className="text-sm text-dark-400">
+                  {t('guide.step3Desc')}
+                </p>
+              </div>
+
+              {/* 方法二 WiFi */}
+              <div className="ml-9">
+                <h4 className="text-xs font-semibold text-dark-300 mb-2">{t('guide.step4Title')}</h4>
+                <p className="text-sm text-dark-400">
+                  {t('guide.step4Desc')}
+                </p>
+              </div>
+            </div>
+
+            {/* 重启服务提示 */}
+            <div className="mt-8 text-center">
+              <p className="text-sm text-blue-400 cursor-pointer hover:underline" onClick={async () => {
+                useDeviceStore.setState({ isReconnecting: true });
+                try {
+                  await restartAdbService();
+                  await restartHdcService();
+                  // 服务重启成功，立即关闭通知
+                  useDeviceStore.setState({ isReconnecting: false });
+                  // 刷新设备列表
+                  fetchDevices();
+                } catch (e: any) {
+                  console.error("restart service failed:", e);
+                  useDeviceStore.setState({ isReconnecting: false });
+                }
+              }}>
+                {t('common.restartService')}
+              </p>
+            </div>
           </div>
         </div>
-        {showGuide && <ConnectionGuide isOpen={showGuide} onClose={() => setShowGuide(false)} />}
       </div>
     );
   }
@@ -320,11 +411,79 @@ const HomePage: React.FC = () => {
           <div className="bg-dark-800/50 border border-dark-700/50 rounded-xl p-5 h-full flex flex-col items-center justify-center">
             <div className="flex flex-col items-center text-center">
               {deviceScreenshot ? (
-                <img
-                  src={`data:image/jpeg;base64,${deviceScreenshot}`}
-                  alt="Screenshot"
-                  className="w-full max-w-[200px] rounded-lg border border-dark-700/50 mb-3"
-                />
+                <div className="relative w-full max-w-[200px] mb-3 group">
+                  <img
+                    src={`data:image/jpeg;base64,${deviceScreenshot}`}
+                    alt="Screenshot"
+                    className="w-full rounded-lg border border-dark-700/50"
+                  />
+                  {/* 悬停按钮 */}
+                  <div className="absolute top-2 right-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <button
+                      onClick={async () => {
+                        try {
+                          const base64 = currentPlatform === "harmonyos"
+                            ? await hdcScreenshot(currentDevice)
+                            : await takeScreenshot(currentDevice);
+                          setHomeCache(currentDevice, { screenshot: base64 });
+                          saveDeviceScreenshot(base64, currentDevice);
+                          try { localStorage.setItem(DEVICE_SCREENSHOT_KEY + currentDevice, base64); } catch {}
+                        } catch {}
+                      }}
+                      className="px-1.5 py-0.5 rounded text-[10px] text-dark-500 hover:text-dark-300 transition-colors bg-dark-700 hover:bg-dark-600 border border-dark-600"
+                    >
+                      {t("common.refresh")}
+                    </button>
+                    <button
+                      onClick={async () => {
+                        if (!deviceScreenshot) return;
+                        try {
+                          const safeName = (marketName || device?.model || currentDevice).replace(/[\\/:*?"<>|]/g, "_");
+                          const result = await save({
+                            defaultPath: `screenshot_${safeName}_${new Date().toISOString().slice(0, 10)}.jpeg`,
+                            filters: [{ name: "JPEG", extensions: ["jpeg", "jpg"] }],
+                          });
+                          if (!result) return;
+                          
+                          // 使用浏览器的 Blob API 来保存文件
+                          const binaryData = atob(deviceScreenshot);
+                          const arrayBuffer = new ArrayBuffer(binaryData.length);
+                          const uint8Array = new Uint8Array(arrayBuffer);
+                          for (let i = 0; i < binaryData.length; i++) {
+                            uint8Array[i] = binaryData.charCodeAt(i);
+                          }
+                          
+                          // 创建 Blob 对象
+                          const blob = new Blob([uint8Array], { type: 'image/jpeg' });
+                          
+                          // 创建下载链接
+                          const url = URL.createObjectURL(blob);
+                          const link = document.createElement('a');
+                          link.href = url;
+                          link.download = result.split('/').pop() || `screenshot_${safeName}.jpeg`;
+                          document.body.appendChild(link);
+                          link.click();
+                          document.body.removeChild(link);
+                          URL.revokeObjectURL(url);
+                          
+                          // 同时更新截图历史
+                          saveDeviceScreenshot(deviceScreenshot, currentDevice);
+                        } catch (e: any) {
+                          console.error("download screenshot failed:", e);
+                        }
+                      }}
+                      className="px-1.5 py-0.5 rounded text-[10px] text-dark-500 hover:text-dark-300 transition-colors bg-dark-700 hover:bg-dark-600 border border-dark-600"
+                    >
+                      {t('tools.saveScreenshot')}
+                    </button>
+                    <button
+                      onClick={() => setShowRebootDialog(true)}
+                      className="px-1.5 py-0.5 rounded text-[10px] text-dark-500 hover:text-yellow-400 transition-colors bg-dark-700 hover:bg-yellow-500/20 border border-dark-600"
+                    >
+                      {t('control.reboot')}
+                    </button>
+                  </div>
+                </div>
               ) : (
                 <div className="w-24 h-40 rounded-lg bg-dark-700/50 flex items-center justify-center mb-3">
                   {loading ? (
@@ -360,45 +519,32 @@ const HomePage: React.FC = () => {
           {currentPlatform === "harmonyos" || currentPlatform === "android" ? (
             <div className="bg-dark-800/50 border border-dark-700/50 rounded-xl p-5 relative"
               onMouseEnter={() => setDetailHover(true)} onMouseLeave={() => setDetailHover(false)}>
-              {/* 刷新按钮 */}
-              {detailHover && (
-              <button
-                onClick={async () => {
-                  if (!currentDevice) return;
-                  setBaseInfoLoading(true);
-                  try {
-                    const info = currentPlatform === "harmonyos"
-                      ? await hdcGetBaseInfo(currentDevice)
-                      : await getAndroidBaseInfo(currentDevice);
-                    setBaseInfo(info);
-                  } catch {} finally { setBaseInfoLoading(false); }
-                }}
-                className="absolute -top-1 right-1 z-10 w-6 h-6 flex items-center justify-center
-                           bg-dark-700 hover:bg-dark-600 border border-dark-600 rounded-full
-                           text-dark-400 hover:text-dark-200 transition-colors"
-                title={t("common.refresh")}
-              >
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                  <polyline points="23 4 23 10 17 10" />
-                  <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
-                </svg>
-              </button>
-              )}
-              {/* 原始数据按钮 */}
-              {detailHover && (
-              <button
-                onClick={() => setShowRawData(true)}
-                className="absolute -top-1 right-6 z-10 w-6 h-6 flex items-center justify-center
-                           bg-dark-700 hover:bg-dark-600 border border-dark-600 rounded-full
-                           text-dark-400 hover:text-dark-200 transition-colors"
-                title={t("common.viewRawData")}
-              >
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                  <polyline points="14 2 14 8 20 8" />
-                </svg>
-              </button>
-              )}
+              {/* 操作按钮 */}
+          {detailHover && (
+          <div className="absolute -top-1 right-1 z-10 flex items-center gap-1">
+            <button
+              onClick={() => setShowRawData(true)}
+              className="px-1.5 py-0.5 rounded text-[10px] text-dark-500 hover:text-dark-300 transition-colors bg-dark-700 hover:bg-dark-600 border border-dark-600"
+            >
+              {t("common.viewRawData")}
+            </button>
+            <button
+              onClick={async () => {
+                if (!currentDevice) return;
+                setBaseInfoLoading(true);
+                try {
+                  const info = currentPlatform === "harmonyos"
+                    ? await hdcGetBaseInfo(currentDevice)
+                    : await getAndroidBaseInfo(currentDevice);
+                  setBaseInfo(info);
+                } catch {} finally { setBaseInfoLoading(false); }
+              }}
+              className="px-1.5 py-0.5 rounded text-[10px] text-dark-500 hover:text-dark-300 transition-colors bg-dark-700 hover:bg-dark-600 border border-dark-600"
+            >
+              {t("common.refresh")}
+            </button>
+          </div>
+          )}
 
               <h3 className="text-sm font-semibold text-dark-200 mb-4">{t("device.deviceDetail")}</h3>
 
@@ -410,9 +556,10 @@ const HomePage: React.FC = () => {
                 </div>
               ) : baseInfo ? (
                 <div className="space-y-2 text-sm max-h-[60vh] overflow-y-auto pr-1">
-                  {(currentPlatform === "harmonyos" ? parseBaseInfo(baseInfo) : parseAndroidBaseInfo(baseInfo).items).map((item) => (
+                  {/* 显示基础信息 */}
+                  {(currentPlatform === "harmonyos" ? parseBaseInfo(baseInfo, screenRes, maxRefreshRate, device?.serial || "", t) : parseAndroidBaseInfo(baseInfo, t).items).map((item) => (
                     <div key={item.key} className="flex items-baseline gap-3">
-                      <span className="text-dark-500 whitespace-nowrap shrink-0 w-24 text-right">{item.key}</span>
+                      <span className="text-dark-500 whitespace-nowrap shrink-0 w-32 text-right">{item.key}</span>
                       <span className="text-dark-200 break-all font-mono text-xs">{item.value}</span>
                     </div>
                   ))}
@@ -495,23 +642,33 @@ const HomePage: React.FC = () => {
               <span className="text-xs text-dark-300">{t("tools.exportBugreport")}</span>
             </button>
             <button
-              onClick={async () => {
-                try {
-                  const base64 = currentPlatform === "harmonyos"
-                    ? await hdcScreenshot(currentDevice)
-                    : await takeScreenshot(currentDevice);
-                  setHomeCache(currentDevice, { screenshot: base64 });
-                  saveDeviceScreenshot(base64, currentDevice);
-                  try { localStorage.setItem(DEVICE_SCREENSHOT_KEY + currentDevice, base64); } catch {}
-                } catch {}
+              onClick={() => {
+                if (!currentDevice) return;
+                navigate("/terminal");
               }}
               className="flex flex-col items-center gap-2 p-4 bg-dark-800/50 border border-dark-700/50 rounded-xl hover:bg-dark-800 transition-colors"
             >
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-accent-400">
-                <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
-                <circle cx="12" cy="13" r="4" />
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-green-400">
+                <polyline points="4 17 10 11 4 5" />
+                <line x1="12" y1="19" x2="20" y2="19" />
               </svg>
-              <span className="text-xs text-dark-300">{t("tools.screenshot")}</span>
+              <span className="text-xs text-dark-300">Shell</span>
+            </button>
+            <button
+              onClick={() => {
+                if (!currentDevice) return;
+                navigate("/automation");
+              }}
+              className="flex flex-col items-center gap-2 p-4 bg-dark-800/50 border border-dark-700/50 rounded-xl hover:bg-dark-800 transition-colors"
+            >
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-purple-400">
+                <rect x="5" y="11" width="14" height="10" rx="2" />
+                <rect x="7" y="3" width="10" height="8" rx="2" />
+                <line x1="12" y1="19" x2="12" y2="21" />
+                <circle cx="9" cy="7" r="1" />
+                <circle cx="15" cy="7" r="1" />
+              </svg>
+              <span className="text-xs text-dark-300">{t('nav.automation')}</span>
             </button>
           </div>
         </div>
@@ -561,6 +718,41 @@ const HomePage: React.FC = () => {
         }}
         onCancel={() => setShowRestartConfirm(false)}
       />
+
+      {/* 重启对话框 */}
+      {showRebootDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={() => setShowRebootDialog(false)}>
+          <div className="bg-dark-800 border border-dark-700/50 rounded-xl max-w-sm w-full mx-4 p-6" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-semibold text-dark-100 mb-6">{t('control.reboot')}</h3>
+            <div className="space-y-3">
+              <button
+                onClick={handleRebootNormal}
+                className="w-full px-4 py-3 rounded-lg bg-dark-700 text-dark-200 hover:bg-yellow-500/20 hover:text-yellow-400 transition-colors text-sm font-medium"
+              >
+                {t('control.reboot')}
+              </button>
+              <button
+                onClick={handleRebootRecovery}
+                className="w-full px-4 py-3 rounded-lg bg-dark-700 text-dark-200 hover:bg-orange-500/20 hover:text-orange-400 transition-colors text-sm font-medium"
+              >
+                {t('control.rebootRecovery')}
+              </button>
+              <button
+                onClick={handleRebootBootloader}
+                className="w-full px-4 py-3 rounded-lg bg-dark-700 text-dark-200 hover:bg-red-500/20 hover:text-red-400 transition-colors text-sm font-medium"
+              >
+                {t('control.rebootBootloader')}
+              </button>
+            </div>
+            <button
+              onClick={() => setShowRebootDialog(false)}
+              className="w-full px-4 py-3 mt-4 rounded-lg bg-dark-700 text-dark-300 hover:bg-dark-600 transition-colors text-sm font-medium"
+            >
+              {t('common.cancel')}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
@@ -581,33 +773,25 @@ function InfoCard({ icon, label, value, loading, onRefresh, rawData }: {
     <>
       <div className="bg-dark-800/50 border border-dark-700/50 rounded-xl p-4 relative group">
         {/* 悬停按钮 */}
-        {onRefresh && (
-          <button
-            onClick={onRefresh}
-            className="hidden group-hover:flex absolute -top-1 right-1 z-10 w-6 h-6 items-center justify-center
-                       bg-dark-700 hover:bg-dark-600 border border-dark-600 rounded-full
-                       text-dark-400 hover:text-dark-200 transition-colors"
-            title={t("common.refresh")}
-          >
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-              <polyline points="23 4 23 10 17 10" />
-              <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
-            </svg>
-          </button>
-        )}
-        {rawData && (
-          <button
-            onClick={() => setShowRaw(true)}
-            className="hidden group-hover:flex absolute -top-1 right-6 z-10 w-6 h-6 items-center justify-center
-                       bg-dark-700 hover:bg-dark-600 border border-dark-600 rounded-full
-                       text-dark-400 hover:text-dark-200 transition-colors"
-            title={t("common.viewRawData")}
-          >
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-              <polyline points="14 2 14 8 20 8" />
-            </svg>
-          </button>
+        { (onRefresh || rawData) && (
+          <div className="hidden group-hover:flex absolute -top-1 right-1 z-10 items-center gap-1">
+            {rawData && (
+              <button
+                onClick={() => setShowRaw(true)}
+                className="px-1.5 py-0.5 rounded text-[10px] text-dark-500 hover:text-dark-300 transition-colors bg-dark-700 hover:bg-dark-600 border border-dark-600"
+              >
+                {t("common.viewRawData")}
+              </button>
+            )}
+            {onRefresh && (
+              <button
+                onClick={onRefresh}
+                className="px-1.5 py-0.5 rounded text-[10px] text-dark-500 hover:text-dark-300 transition-colors bg-dark-700 hover:bg-dark-600 border border-dark-600"
+              >
+                {t("common.refresh")}
+              </button>
+            )}
+          </div>
         )}
         <div className="flex items-center gap-2 mb-2">
           <span className="text-dark-500">{icon}</span>
@@ -650,7 +834,7 @@ function InfoCard({ icon, label, value, loading, onRefresh, rawData }: {
 }
 
 /** 解析 hidumper -c base 输出为 key-value 列表 */
-function parseBaseInfo(raw: string): { key: string; value: string }[] {
+function parseBaseInfo(raw: string, screenRes: string, maxRefreshRate: number, serial: string, t: any): { key: string; value: string }[] {
   const items: { key: string; value: string }[] = [];
   const isZh = navigator.language.startsWith("zh");
 
@@ -712,53 +896,74 @@ function parseBaseInfo(raw: string): { key: string; value: string }[] {
     return m ? m[1] : "";
   };
 
-  // ===== 3. 按指定顺序构建输出 =====
-  const t = (zh: string, en: string) => isZh ? zh : en;
-
   // --- 基本信息 ---
-  items.push({ key: t("商品名", "Market Name"), value: baseKv.MarketName || "-" });
-  items.push({ key: t("制造商", "Manufacturer"), value: [baseKv.Manufacture, baseKv.Brand].filter(Boolean).join(" / ") || "-" });
+  items.push({ key: t("device.marketName", "Market Name"), value: baseKv.MarketName || "-" });
+  // 制造商信息：如果Manufacture和Brand相同，只显示一个
+  const manufacture = baseKv.Manufacture || "";
+  const brand = baseKv.Brand || "";
+  let manufacturerValue = "-";
+  if (manufacture && brand) {
+    if (manufacture === brand) {
+      manufacturerValue = manufacture;
+    } else {
+      manufacturerValue = `${manufacture} / ${brand}`;
+    }
+  } else if (manufacture) {
+    manufacturerValue = manufacture;
+  } else if (brand) {
+    manufacturerValue = brand;
+  }
+  items.push({ key: t("device.manufacturer", "Manufacturer"), value: manufacturerValue });
 
   // --- 硬件信息（商品名之后）---
   const cpuChip = getCmdParam("ohos.boot.hardware") || getCmdParam("ohos.boot.chiptype");
-  if (cpuChip) items.push({ key: t("CPU", "CPU"), value: cpuChip });
+  if (cpuChip) items.push({ key: t("device.cpu", "CPU"), value: cpuChip });
 
   // GPU 信息优先使用 hidumper RenderService 数据
   const gpuRenderer = gpuKv.GL_RENDERER;
   const gpuVersion = gpuKv.GL_VERSION;
+  const gpuVendor = getCmdParam("ohos.boot.gpu_vendor");
   if (gpuRenderer) {
-    items.push({ key: "GPU", value: gpuRenderer });
-    if (gpuVersion) items.push({ key: t("OpenGL", "OpenGL"), value: gpuVersion });
+    let gpuValue = gpuRenderer;
+    if (gpuVendor) {
+      gpuValue += ` (${gpuVendor})`;
+    }
+    items.push({ key: "GPU", value: gpuValue });
+    if (gpuVersion) items.push({ key: "OpenGL", value: gpuVersion });
   } else {
     // 回退到 cmdline
     const gpu = getCmdParam("ohos.boot.gpu_vendor");
     if (gpu) items.push({ key: "GPU", value: gpu });
   }
   const ufs = getCmdParam("ufs_product_name");
-  if (ufs) items.push({ key: t("存储", "Storage"), value: ufs });
+  if (ufs) items.push({ key: t("device.storage", "Storage"), value: ufs });
   const modemChips: string[] = [];
   const m1 = cmdline.match(/ohos\.boot\.odm\.conn\.chiptype=(\S+)/);
   const m2 = cmdline.match(/ohos\.boot\.odm\.conn\.gnsschiptype=(\S+)/);
   if (m1) modemChips.push(m1[1]);
   if (m2) modemChips.push(m2[1]);
-  if (modemChips.length > 0) items.push({ key: t("通信芯片", "Modem Chip"), value: [...new Set(modemChips)].join(", ") });
+  if (modemChips.length > 0) items.push({ key: t("device.modemChip", "Modem Chip"), value: [...new Set(modemChips)].join(", ") });
+
+  // --- 显示信息 ---
+  if (screenRes) items.push({ key: t("device.screenResolution", "Screen Resolution"), value: screenRes });
+  if (maxRefreshRate > 0) items.push({ key: t("device.maxRefreshRate", "Max Refresh Rate"), value: `${maxRefreshRate} Hz` });
 
   // --- 系统信息 ---
   let osVer = baseKv.OsVersion || "-";
   const osMatch = osVer.match(/(OpenHarmony|HarmonyOS)[-\d.]+/);
   if (osMatch) osVer = osMatch[0];
-  items.push({ key: t("系统版本", "OS Version"), value: osVer });
-  items.push({ key: t("设备类型", "Device Type"), value: baseKv.DeviceType || "-" });
-  items.push({ key: t("产品系列", "Product Series"), value: baseKv.ProductSeries || "-" });
-  items.push({ key: t("产品型号", "Product Model"), value: baseKv.ProductModel || "-" });
+  items.push({ key: t("device.osVersion", "OS Version"), value: osVer });
+  items.push({ key: t("device.deviceType", "Device Type"), value: baseKv.DeviceType || "-" });
+  items.push({ key: t("device.productSeries", "Product Series"), value: baseKv.ProductSeries || "-" });
+  items.push({ key: t("device.productModel", "Product Model"), value: baseKv.ProductModel || "-" });
 
-  items.push({ key: t("硬件型号", "Hardware Model"), value: baseKv.HardwareModel || "-" });
-  items.push({ key: t("CPU架构", "ABI"), value: baseKv.ABIList || "-" });
-  items.push({ key: t("安全补丁", "Security Patch"), value: baseKv.SecurityPatch || "-" });
-  items.push({ key: t("增量版本", "Incremental"), value: baseKv.IncrementalVersion || "-" });
-  items.push({ key: t("SDK API", "SDK API"), value: baseKv.SDKAPIVersion || "-" });
-  items.push({ key: t("构建ID", "Build ID"), value: baseKv.BuildId || "-" });
-  items.push({ key: t("发布类型", "Release Type"), value: baseKv.RleaseType || "-" });
+  items.push({ key: t("device.hardwareModel", "Hardware Model"), value: baseKv.HardwareModel || "-" });
+  items.push({ key: t("device.abiList", "ABI"), value: baseKv.ABIList || "-" });
+  items.push({ key: t("device.securityPatch", "Security Patch"), value: baseKv.SecurityPatch || "-" });
+  items.push({ key: t("device.incremental", "Incremental"), value: baseKv.IncrementalVersion || "-" });
+  items.push({ key: t("device.sdkVersion", "SDK API"), value: baseKv.SDKAPIVersion || "-" });
+  items.push({ key: t("device.buildId", "Build ID"), value: baseKv.BuildId || "-" });
+  items.push({ key: t("device.releaseType", "Release Type"), value: baseKv.RleaseType || "-" });
 
   // --- 构建时间 + 系统指纹 ---
   let buildTime = baseKv.BuildTime || "-";
@@ -766,16 +971,54 @@ function parseBaseInfo(raw: string): { key: string; value: string }[] {
   if (!isNaN(ts) && ts > 1e12) {
     buildTime = new Date(ts).toLocaleString(isZh ? "zh-CN" : "en-US");
   }
-  items.push({ key: t("系统指纹", "System Fingerprint"), value: getCmdParam("ohos.boot.hvb.digest") || "-" });
-  items.push({ key: t("构建时间", "Build Time"), value: buildTime });
+  items.push({ key: t("device.systemFingerprint", "System Fingerprint"), value: getCmdParam("ohos.boot.hvb.digest") || "-" });
+  items.push({ key: t("device.buildTime", "Build Time"), value: buildTime });
 
   // --- 运行信息 ---
   const rebootReason = getCmdParam("reboot_reason") || getCmdParam("ohos.boot.reboot_reason");
-  if (rebootReason) items.push({ key: t("上次关机原因", "Last Reboot Reason"), value: rebootReason });
+  if (rebootReason) items.push({ key: t("device.lastRebootReason", "Last Reboot Reason"), value: rebootReason });
 
   // --- UDID ---
   const udid = getCmdParam("ohos.boot.udid");
   if (udid) items.push({ key: "UDID", value: udid });
+
+  // --- SN ---
+  const cmdlineSn = getCmdParam("sn");
+  // 对于 HarmonyOS 设备，优先使用 cmdline 中的 SN，因为 device.serial 可能是 IP:端口
+  const displaySn = cmdlineSn || serial;
+  if (displaySn) items.push({ key: t("device.serial", "Serial"), value: displaySn });
+
+  // --- 电池SN ---
+  const batterySn = getCmdParam("battery_nv_sn");
+  if (batterySn) items.push({ key: t("device.batterySn", "Battery SN"), value: batterySn });
+
+  // --- 存储芯片 CID 码 ---
+  const storageCid = getCmdParam("storage_cid");
+  if (storageCid) items.push({ key: t("device.storageCid", "Storage CID"), value: storageCid });
+
+  // --- 系统崩溃 ---
+  const panicPc = getCmdParam("panic_pc");
+  if (panicPc) items.push({ key: t("device.systemCrash", "System Crash"), value: panicPc === "NA" ? t("common.none", "None") : panicPc });
+
+  // --- 系统类型 ---
+  const hvbEnable = getCmdParam("ohos.boot.hvb.enable");
+  if (hvbEnable) items.push({ key: t("device.systemType", "System Type"), value: hvbEnable === "green" ? t("device.officialSystem", "Official System") : t("device.thirdPartySystem", "Third-party System") });
+
+  // --- Bootloader锁 ---
+  const hvbDeviceState = getCmdParam("ohos.boot.hvb.device_state");
+  if (hvbDeviceState) items.push({ key: t("device.bootloaderLock", "Bootloader Lock"), value: hvbDeviceState === "locked" ? t("common.yes", "Yes") : t("common.no", "No") });
+
+  // --- 设备区域 ---
+  const deviceRegion = getCmdParam("device_region");
+  if (deviceRegion) items.push({ key: t("device.deviceRegion", "Device Region"), value: deviceRegion });
+
+  // --- OEM模式 ---
+  const oemMode = getCmdParam("oemmode");
+  if (oemMode) items.push({ key: t("device.oemMode", "OEM Mode"), value: oemMode });
+
+  // --- 主板ID ---
+  const boardId = getCmdParam("ohos.boot.board.boardid") || getCmdParam("boardid");
+  if (boardId) items.push({ key: t("device.boardId", "Board ID"), value: boardId });
 
   for (const line of lines) {
     if (line.includes("up ") && line.includes("load average")) {
@@ -784,8 +1027,8 @@ function parseBaseInfo(raw: string): { key: string; value: string }[] {
         let uptime = match[1].trim();
         uptime = uptime.replace(/0 weeks,?\s*/g, "").replace(/0 days,?\s*/g, "").replace(/0 hours,?\s*/g, "").trim();
         if (uptime.endsWith(",")) uptime = uptime.slice(0, -1);
-        items.push({ key: t("运行时间", "Uptime"), value: uptime });
-        items.push({ key: t("系统负载", "Load Average"), value: match[2].trim() });
+        items.push({ key: t("device.uptime", "Uptime"), value: uptime });
+        items.push({ key: t("device.loadAverage", "Load Average"), value: match[2].trim() });
       }
       break;
     }
@@ -794,7 +1037,7 @@ function parseBaseInfo(raw: string): { key: string; value: string }[] {
   return items;
 }
 
-function parseAndroidBaseInfo(raw: string): {
+function parseAndroidBaseInfo(raw: string, t: any): {
   items: { key: string; value: string }[];
   osVersion: string;
   sdkVersion: string;
@@ -852,25 +1095,25 @@ function parseAndroidBaseInfo(raw: string): {
 
   // 构建显示列表
   items.push(
-    { key: isZh ? "型号" : "Model", value: dash("MODEL") },
-    { key: isZh ? "品牌" : "Brand", value: dash("BRAND") },
-    { key: isZh ? "Android" : "Android", value: dash("ANDROID") },
-    { key: isZh ? "SDK" : "SDK", value: v("SDK") ? `API ${v("SDK")}` : "-" },
-    { key: isZh ? "安全补丁" : "Patch", value: dash("PATCH") },
-    { key: isZh ? "版本号" : "Build", value: dash("BUILD") },
-    { key: isZh ? "序列号" : "Serial", value: dash("SERIAL") },
-    { key: isZh ? "分辨率" : "Resolution", value: dash("RESOLUTION") },
-    { key: isZh ? "密度" : "Density", value: dash("DENSITY") },
-    { key: isZh ? "刷新率" : "Refresh", value: v("REFRESH") ? `${v("REFRESH")} Hz` : "-" },
-    { key: isZh ? "CPU" : "CPU", value: result.cpuInfo || dash("CPU_PLATFORM") || "-" },
-    { key: isZh ? "核心数" : "Cores", value: v("CORES") ? `${v("CORES").trim()} ${isZh ? "核" : "cores"}` : "-" },
-    { key: isZh ? "最大频率" : "Max Freq", value: dash("MAX_FREQ") },
-    { key: isZh ? "GPU" : "GPU", value: dash("GPU") },
-    { key: isZh ? "WiFi IP" : "WiFi IP", value: dash("WIFI_IP") === "-" ? (isZh ? "未连接" : "Not connected") : dash("WIFI_IP") },
-    { key: isZh ? "支持架构" : "ABI List", value: dash("ABI_LIST") },
-    { key: isZh ? "主架构" : "Primary ABI", value: dash("ABI_PRIMARY") },
-    { key: isZh ? "内核" : "Kernel", value: dash("KERNEL") },
-    { key: isZh ? "运行时间" : "Uptime", value: dash("UPTIME") },
+    { key: t("device.model", "Model"), value: dash("MODEL") },
+    { key: t("device.brand", "Brand"), value: dash("BRAND") },
+    { key: "Android", value: dash("ANDROID") },
+    { key: t("device.sdkVersion", "SDK"), value: v("SDK") ? `API ${v("SDK")}` : "-" },
+    { key: t("device.securityPatch", "Security Patch"), value: dash("PATCH") },
+    { key: t("device.buildId", "Build"), value: dash("BUILD") },
+    { key: t("device.serial", "Serial"), value: dash("SERIAL") },
+    { key: t("device.screenResolution", "Resolution"), value: dash("RESOLUTION") },
+    { key: t("device.density", "Density"), value: dash("DENSITY") },
+    { key: t("device.refreshRate", "Refresh"), value: v("REFRESH") ? `${v("REFRESH")} Hz` : "-" },
+    { key: t("device.cpu", "CPU"), value: result.cpuInfo || dash("CPU_PLATFORM") || "-" },
+    { key: t("device.cores", "Cores"), value: v("CORES") ? `${v("CORES").trim()} ${isZh ? "核" : "cores"}` : "-" },
+    { key: t("device.maxFreq", "Max Freq"), value: dash("MAX_FREQ") },
+    { key: "GPU", value: dash("GPU") },
+    { key: t("device.wifiIp", "WiFi IP"), value: dash("WIFI_IP") === "-" ? t("device.notConnected", "Not connected") : dash("WIFI_IP") },
+    { key: t("device.abiList", "ABI List"), value: dash("ABI_LIST") },
+    { key: t("device.primaryAbi", "Primary ABI"), value: dash("ABI_PRIMARY") },
+    { key: t("device.kernelVersion", "Kernel"), value: dash("KERNEL") },
+    { key: t("device.uptime", "Uptime"), value: dash("UPTIME") },
   );
 
   return result;

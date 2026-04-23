@@ -26,6 +26,47 @@
     color: #e2e8f0;
   }
 
+  /* 深色主题变量 */
+  :root {
+    --bg-primary: #020617;
+    --bg-secondary: #0f172a;
+    --bg-tertiary: #1e293b;
+    --text-primary: #e2e8f0;
+    --text-secondary: #94a3b8;
+    --text-muted: #64748b;
+    --border-color: #334155;
+    --accent-color: #3b82f6;
+    --success-color: #10b981;
+    --error-color: #ef4444;
+  }
+
+  /* 浅色主题变量 */
+  .light-theme {
+    --bg-primary: #f8fafc;
+    --bg-secondary: #ffffff;
+    --bg-tertiary: #f1f5f9;
+    --text-primary: #1e293b;
+    --text-secondary: #475569;
+    --text-muted: #94a3b8;
+    --border-color: #e2e8f0;
+    --accent-color: #3b82f6;
+    --success-color: #10b981;
+    --error-color: #ef4444;
+  }
+
+  /* 深色主题 */
+  .dark-theme {
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+  }
+
+  /* 浅色主题 */
+  .light-theme {
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+  }
+
+  /* 滚动条样式 */
   ::-webkit-scrollbar {
     width: 6px;
     height: 6px;
@@ -36,17 +77,18 @@
   }
 
   ::-webkit-scrollbar-thumb {
-    background: #334155;
+    background: var(--border-color);
     border-radius: 3px;
   }
 
   ::-webkit-scrollbar-thumb:hover {
-    background: #475569;
+    background: var(--text-muted);
   }
 
+  /* 选中文本样式 */
   ::selection {
     background-color: rgba(59, 130, 246, 0.3);
-    color: #e2e8f0;
+    color: var(--text-primary);
   }
 }
 
@@ -58,5 +100,102 @@
   .no-scrollbar {
     -ms-overflow-style: none;
     scrollbar-width: none;
+  }
+
+  /* 主题相关工具类 */
+  .bg-dark-100 {
+    background-color: var(--bg-primary);
+  }
+
+  .bg-dark-200 {
+    background-color: var(--bg-secondary);
+  }
+
+  .bg-dark-300 {
+    background-color: var(--bg-tertiary);
+  }
+
+  .text-dark-100 {
+    color: var(--text-primary);
+  }
+
+  .text-dark-200 {
+    color: var(--text-secondary);
+  }
+
+  .text-dark-300 {
+    color: var(--text-muted);
+  }
+
+  .border-dark-100 {
+    border-color: var(--border-color);
+  }
+
+  .accent-500 {
+    color: var(--accent-color);
+  }
+
+  .accent-400 {
+    color: var(--accent-color);
+  }
+
+  .green-400 {
+    color: var(--success-color);
+  }
+
+  .red-400 {
+    color: var(--error-color);
+  }
+
+  .bg-accent-50010 {
+    background-color: rgba(59, 130, 246, 0.1);
+  }
+
+  .bg-accent-50020 {
+    background-color: rgba(59, 130, 246, 0.2);
+  }
+
+  .bg-accent-50030 {
+    background-color: rgba(59, 130, 246, 0.3);
+  }
+
+  .border-accent-500 {
+    border-color: var(--accent-color);
+  }
+
+  .bg-green-50020 {
+    background-color: rgba(16, 185, 129, 0.2);
+  }
+
+  .border-green-50030 {
+    border-color: rgba(16, 185, 129, 0.3);
+  }
+
+  .bg-light-100 {
+    background-color: var(--bg-primary);
+  }
+
+  .bg-light-200 {
+    background-color: var(--bg-secondary);
+  }
+
+  .bg-light-300 {
+    background-color: var(--bg-tertiary);
+  }
+
+  .text-light-100 {
+    color: var(--text-primary);
+  }
+
+  .text-light-200 {
+    color: var(--text-secondary);
+  }
+
+  .text-light-300 {
+    color: var(--text-muted);
+  }
+
+  .border-light-100 {
+    border-color: var(--border-color);
   }
 }

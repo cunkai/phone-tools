@@ -79,31 +79,18 @@ const PanelRefreshButton: React.FC<PanelRefreshButtonProps> = ({ onRefresh, load
   };
 
   return (
-    <div className="absolute -top-1 -right-1 z-10">
-      {/* 刷新按钮 - 通过 group-hover 控制显示 */}
+    <div className="relative z-10">
+      {/* 刷新按钮 */}
       <button
-        className="hidden group-hover:flex w-6 h-6 items-center justify-center
-                   bg-dark-700 hover:bg-dark-600 border border-dark-600 rounded-full
-                   text-dark-400 hover:text-dark-200 transition-colors"
+        className="flex items-center justify-center
+                   bg-dark-700 hover:bg-dark-600 border border-dark-600 rounded
+                   text-dark-400 hover:text-dark-200 transition-colors px-1.5 py-0.5 text-[10px]"
         onClick={handleClick}
         onMouseDown={handleMouseDown}
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseUp}
-        title={t("common.refresh")}
       >
-        <svg
-          width="12"
-          height="12"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2.5"
-          className={loading ? "animate-spin" : ""}
-        >
-          <path d="M23 4v6h-6" />
-          <path d="M1 20v-6h6" />
-          <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
-        </svg>
+        {t("common.refresh")}
       </button>
 
       {/* 自动刷新指示器 - 始终显示（当有自动刷新时） */}

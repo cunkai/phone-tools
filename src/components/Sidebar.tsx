@@ -49,6 +49,7 @@ const navItems: NavItem[] = [
     ),
     labelKey: "nav.apps",
   },
+
   {
     path: "/tools",
     icon: (
@@ -110,10 +111,11 @@ const navItems: NavItem[] = [
     path: "/automation",
     icon: (
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <rect x="3" y="3" width="7" height="7" />
-        <rect x="14" y="3" width="7" height="7" />
-        <rect x="14" y="14" width="7" height="7" />
-        <rect x="3" y="14" width="7" height="7" />
+        <rect x="5" y="11" width="14" height="10" rx="2" />
+        <rect x="7" y="3" width="10" height="8" rx="2" />
+        <line x1="12" y1="19" x2="12" y2="21" />
+        <circle cx="9" cy="7" r="1" />
+        <circle cx="15" cy="7" r="1" />
       </svg>
     ),
     labelKey: "nav.automation",

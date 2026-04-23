@@ -100,7 +100,7 @@ fn get_common_adb_paths() -> Vec<String> {
 }
 
 /// 查找内置 tools 目录中的工具
-/// Tauri 打包后，资源文件在可执行文件同级的 tools/ 目录
+/// Tauri 打包后，资源文件在 Resources/tools/ 目录
 /// 开发时，在 src-tauri/tools/ 目录
 pub fn find_builtin_tool(tool_name: &str) -> Option<String> {
     // Windows 下工具名带 .exe 后缀
@@ -109,10 +109,27 @@ pub fn find_builtin_tool(tool_name: &str) -> Option<String> {
     #[cfg(not(target_os = "windows"))]
     let tool_file = tool_name.to_string();
 
-    // 1. 检查可执行文件同级的 tools/ 目录（打包后）
+    // 获取当前平台目录
+    #[cfg(target_os = "windows")]
+    let platform_dir = "windows";
+    #[cfg(target_os = "macos")]
+    let platform_dir = "macos";
+    #[cfg(target_os = "linux")]
+    let platform_dir = "linux";
+
+    // 1. 检查可执行文件同级的 Resources/tools/ 目录（macOS 打包后）
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
-            let builtin = exe_dir.join("tools").join(&tool_file);
+            // macOS: Contents/MacOS/ 同级的 Contents/Resources/ 目录
+            if let Some(contents_dir) = exe_dir.parent() {
+                let resources_dir = contents_dir.join("Resources");
+                let builtin = resources_dir.join("tools").join(platform_dir).join(&tool_file);
+                if builtin.exists() {
+                    return Some(builtin.to_string_lossy().to_string());
+                }
+            }
+            // Windows: 可执行文件同级的 tools/ 目录
+            let builtin = exe_dir.join("tools").join(platform_dir).join(&tool_file);
             if builtin.exists() {
                 return Some(builtin.to_string_lossy().to_string());
             }
@@ -120,13 +137,13 @@ pub fn find_builtin_tool(tool_name: &str) -> Option<String> {
     }
 
     // 2. 检查当前工作目录下的 tools/ 目录（开发时）
-    let dev_path = Path::new("tools").join(&tool_file);
+    let dev_path = Path::new("tools").join(platform_dir).join(&tool_file);
     if dev_path.exists() {
         return Some(dev_path.to_string_lossy().to_string());
     }
 
     // 3. 检查 src-tauri/tools/ 目录（开发时从项目根目录运行）
-    let src_tauri_path = Path::new("src-tauri/tools").join(&tool_file);
+    let src_tauri_path = Path::new("src-tauri/tools").join(platform_dir).join(&tool_file);
     if src_tauri_path.exists() {
         return Some(src_tauri_path.to_string_lossy().to_string());
     }

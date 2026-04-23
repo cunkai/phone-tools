@@ -79,6 +79,7 @@ pub async fn execute_action(
         "open_app" => execute_open_app(&state, &serial, &platform, &action.params).await,
         "delay" => execute_delay(&state, &action.params).await,
         "condition" => execute_condition(&state, &serial, &platform, &action.params).await,
+        "code" => execute_code(&state, &action.params).await,
         other => Err(format!("未知操作类型: {}", other)),
     };
 
@@ -647,7 +648,10 @@ async fn execute_condition(
         .map_err(|e| format!("解析 condition.target 失败: {}", e))?;
     let expected: Color = serde_json::from_value(cond["expected"].clone())
         .map_err(|e| format!("解析 condition.expected 失败: {}", e))?;
-    let tolerance: u8 = serde_json::from_value(cond["tolerance"].clone()).unwrap_or(30);
+    let tolerance: u8 = serde_json::from_value(cond["tolerance"].clone()).unwrap_or(10);
+    let toleranceR: u8 = serde_json::from_value(cond["toleranceR"].clone()).unwrap_or(tolerance);
+    let toleranceG: u8 = serde_json::from_value(cond["toleranceG"].clone()).unwrap_or(tolerance);
+    let toleranceB: u8 = serde_json::from_value(cond["toleranceB"].clone()).unwrap_or(tolerance);
     let timeout: u64 = serde_json::from_value(cond["timeout"].clone()).unwrap_or(5000);
     let interval: u64 = serde_json::from_value(cond["interval"].clone()).unwrap_or(500);
 
@@ -680,7 +684,8 @@ async fn execute_condition(
 
         // 检查坐标是否在图片范围内
         if target.x >= image.width() || target.y >= image.height() {
-            return Err(format!("坐标 ({}, {}) 超出图片范围 ({}x{})",
+            return Err(format!("坐标 ({}, {}) 超出图片范围 ({}x{})
+",
                 target.x, target.y, image.width(), image.height()));
         }
 
@@ -693,7 +698,7 @@ async fn execute_condition(
         };
 
         // 比较颜色（带容差）
-        let matched = color_matches(&actual, &expected, tolerance);
+        let matched = color_matches(&actual, &expected, toleranceR, toleranceG, toleranceB);
 
         if matched {
             return Ok(ActionResult {
@@ -704,17 +709,18 @@ async fn execute_condition(
             });
         }
 
-        // 超时检查
-        if start.elapsed() >= timeout_dur {
+        // 超时检查（如果 timeout > 0）
+        if timeout > 0 && start.elapsed() >= timeout_dur {
             return Ok(ActionResult {
                 success: true,
                 actual_color: Some(actual),
                 matched: Some(false),
                 message: Some(format!(
-                    "条件不匹配: 期望 rgba({},{},{},{}) 实际 rgba({},{},{},{}) 容差 {}",
+                    "条件不匹配: 期望 rgba({},{},{},{}) 实际 rgba({},{},{},{}) 容差 R:{} G:{} B:{}
+",
                     expected.r, expected.g, expected.b, expected.a,
                     actual.r, actual.g, actual.b, actual.a,
-                    tolerance
+                    toleranceR, toleranceG, toleranceB
                 )),
             });
         }
@@ -723,10 +729,19 @@ async fn execute_condition(
     }
 }
 
-fn color_matches(actual: &Color, expected: &Color, tolerance: u8) -> bool {
+fn color_matches(actual: &Color, expected: &Color, toleranceR: u8, toleranceG: u8, toleranceB: u8) -> bool {
     let dr = (actual.r as i16 - expected.r as i16).abs();
     let dg = (actual.g as i16 - expected.g as i16).abs();
     let db = (actual.b as i16 - expected.b as i16).abs();
     let da = (actual.a as i16 - expected.a as i16).abs();
-    dr <= tolerance as i16 && dg <= tolerance as i16 && db <= tolerance as i16 && da <= tolerance as i16
+    dr <= toleranceR as i16 && dg <= toleranceG as i16 && db <= toleranceB as i16 && da <= 255
+}
+
+/// 执行代码组件
+/// 注意：代码执行逻辑在前端处理，后端仅作为占位符返回成功
+async fn execute_code(
+    _state: &State<'_, AppState>,
+    _params: &serde_json::Value,
+) -> Result<ActionResult, String> {
+    Ok(ok())
 }

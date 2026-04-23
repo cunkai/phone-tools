@@ -44,6 +44,8 @@ pub fn run() {
             // Shell 和日志
             commands::execute_shell,
             commands::get_logcat,
+            commands::start_logcat_stream,
+            commands::stop_logcat_stream,
             // 性能监控
             commands::get_performance_info,
             commands::get_battery_info,
@@ -97,6 +99,8 @@ pub fn run() {
             commands::hdc_connect_wifi,
             commands::hdc_install_app,
             commands::hdc_uninstall_app,
+            commands::hdc_clear_cache,
+            commands::hdc_clear_data,
             commands::hdc_get_installed_apps,
             commands::hdc_get_app_list,
             commands::hdc_get_app_detail,
@@ -107,6 +111,8 @@ pub fn run() {
             commands::hdc_screenshot,
             commands::hdc_push_file,
             commands::hdc_pull_file,
+            commands::hdc_get_file_list,
+            commands::hdc_check_paths_permission,
             commands::hdc_get_device_info,
             commands::hdc_reboot,
             commands::hdc_reboot_recovery,
@@ -117,6 +123,7 @@ pub fn run() {
             commands::check_hdc_available,
             commands::get_hdc_path,
             commands::set_hdc_path,
+            commands::get_hdc_version,
             // HarmonyOS 性能监控
             commands::hdc_get_performance_info,
             commands::hdc_get_cpu_usage,

@@ -374,6 +374,16 @@ impl AdbCommand {
         matches!(ext.as_str(), "xapk" | "apks" | "apkm")
     }
 
+    /// 判断是否为 HarmonyOS 安装包（.hap）
+    pub fn is_hap_file(path: &str) -> bool {
+        let ext = std::path::Path::new(path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_lowercase())
+            .unwrap_or_default();
+        ext == "hap"
+    }
+
     /// 安装归档格式 APK（.xapk / .apks / .apkm）
     /// 流程：解压 → 读取 manifest.json → adb install-multiple
     pub async fn install_archive<F>(
@@ -1190,7 +1200,7 @@ impl AdbCommand {
             .map_err(|_| AdbError::ExecutionFailed("ADB 并发限制获取失败".to_string()))?;
 
         let remote_file = "/data/local/tmp/sc.png";
-        let local_dir = std::env::temp_dir().join("android-toolbox");
+        let local_dir = std::env::temp_dir().join("phone-toolbox");
         let local_file = local_dir.join("sc.png");
 
         // 确保本地目录存在
@@ -1713,6 +1723,12 @@ impl AdbCommand {
 
         eprintln!("[parse_apk_info_local] File size: {} bytes", metadata.len());
 
+        // 检查是否为 HarmonyOS 安装包（.hap）
+        if Self::is_hap_file(file_path) {
+            eprintln!("[parse_apk_info_local] Detected HAP file, parsing module.json...");
+            return self.parse_hap_info_local(file_path, metadata.len());
+        }
+
         let mut apk_info = ApkInfo {
             package_name: String::new(),
             app_name: String::new(),
@@ -2117,6 +2133,128 @@ for s in strings:
         None
     }
 
+    /// 解析本地 HAP 文件信息（从 module.json 读取）
+    pub fn parse_hap_info_local(&self, file_path: &str, file_size: u64) -> AdbResult<ApkInfo> {
+        let file = std::fs::File::open(file_path).map_err(|e| {
+            AdbError::ExecutionFailed(format!("无法打开文件: {}", e))
+        })?;
+
+        let mut archive = zip::ZipArchive::new(file).map_err(|e| {
+            AdbError::ExecutionFailed(format!("无法解析 ZIP: {}", e))
+        })?;
+
+        // 读取 module.json
+        let mut module_json: Option<serde_json::Value> = None;
+
+        if let Ok(mut entry) = archive.by_name("module.json") {
+            let mut content = String::new();
+            if entry.read_to_string(&mut content).is_ok() {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                    module_json = Some(json);
+                    eprintln!("[parse_hap] Read module.json successfully");
+                }
+            }
+        }
+
+        let mut apk_info = ApkInfo {
+            package_name: String::new(),
+            app_name: String::new(),
+            version_name: String::new(),
+            version_code: String::new(),
+            permissions: Vec::new(),
+            icon_base64: None,
+            file_size: crate::utils::format_file_size(file_size),
+            min_sdk_version: None,
+            target_sdk_version: None,
+        };
+
+        if let Some(module) = module_json {
+            // 从 app 部分提取信息
+            if let Some(app) = module.get("app") {
+                // 包名
+                if let Some(pkg) = app.get("bundleName").and_then(|v| v.as_str()) {
+                    apk_info.package_name = pkg.to_string();
+                }
+
+                // 应用名（label）
+                if let Some(label) = app.get("label").and_then(|v| v.as_str()) {
+                    // 处理 $string:app_name 格式
+                    if label.starts_with("$string:") {
+                        let string_name = label.strip_prefix("$string:").unwrap_or("app_name");
+                        // 尝试从 resources/base/element/string.json 读取
+                        if let Ok(mut entry) = archive.by_name("resources/base/element/string.json") {
+                            let mut string_content = String::new();
+                            if entry.read_to_string(&mut string_content).is_ok() {
+                                if let Ok(string_json) = serde_json::from_str::<serde_json::Value>(&string_content) {
+                                    if let Some(strings) = string_json.get("string") {
+                                        if let Some(string_array) = strings.as_array() {
+                                            for item in string_array {
+                                                if let Some(name) = item.get("name").and_then(|v| v.as_str()) {
+                                                    if name == string_name {
+                                                        if let Some(value) = item.get("value").and_then(|v| v.as_str()) {
+                                                            apk_info.app_name = value.to_string();
+                                                            break;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        apk_info.app_name = label.to_string();
+                    }
+                }
+
+                // 版本信息
+                if let Some(ver) = app.get("versionName").and_then(|v| v.as_str()) {
+                    apk_info.version_name = ver.to_string();
+                }
+                if let Some(vc) = app.get("versionCode").and_then(|v| v.as_i64()) {
+                    apk_info.version_code = vc.to_string();
+                }
+
+                // 最小 SDK 版本
+                if let Some(min_sdk) = app.get("compileSdkVersion").and_then(|v| v.as_i64()) {
+                    apk_info.min_sdk_version = Some(min_sdk as i32);
+                } else if let Some(min_sdk) = app.get("minAPIVersion").and_then(|v| v.as_i64()) {
+                    apk_info.min_sdk_version = Some(min_sdk as i32);
+                }
+
+                // 目标 SDK 版本
+                if let Some(target_sdk) = app.get("targetAPIVersion").and_then(|v| v.as_i64()) {
+                    apk_info.target_sdk_version = Some(target_sdk as i32);
+                }
+            }
+
+            // 从 module 部分提取信息
+            if let Some(module_info) = module.get("module") {
+                // 权限信息
+                if let Some(permissions) = module_info.get("requestPermissions").and_then(|v| v.as_array()) {
+                    for perm in permissions {
+                        if let Some(name) = perm.get("name").and_then(|v| v.as_str()) {
+                            apk_info.permissions.push(name.to_string());
+                        }
+                    }
+                }
+            }
+        }
+
+        // 如果没有应用名，尝试从文件名提取
+        if apk_info.app_name.is_empty() {
+            if let Some(file_name) = std::path::Path::new(file_path).file_stem() {
+                let name = file_name.to_string_lossy().to_string();
+                apk_info.app_name = name;
+            }
+        }
+
+        eprintln!("[parse_hap] Final: pkg={}, name={}, ver={}, min_sdk={:?}", 
+            apk_info.package_name, apk_info.app_name, apk_info.version_name, apk_info.min_sdk_version);
+        Ok(apk_info)
+    }
+
     /// 检查 ADB 是否可用
     pub async fn check_available(&self) -> bool {
         self.execute(&["version"]).await.is_ok()
@@ -2125,6 +2263,14 @@ for s in strings:
     /// 获取 ADB 版本
     pub async fn get_version(&self) -> AdbResult<String> {
         let output = self.execute(&["version"]).await?;
+        // 从输出中提取版本号，格式：Android Debug Bridge version 1.0.41
+        if let Some(version) = output.trim().lines().next() {
+            if let Some(version_part) = version.split("version ").nth(1) {
+                if let Some(actual_version) = version_part.split_whitespace().next() {
+                    return Ok(actual_version.to_string());
+                }
+            }
+        }
         Ok(output.trim().to_string())
     }
 

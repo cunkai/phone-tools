@@ -1,0 +1,7 @@
+{
+"bundle": {
+    "resources": {
+      "tools/linux": "tools/linux/"
+    }
+  }
+}
