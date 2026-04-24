@@ -138,13 +138,36 @@ pub fn find_builtin_tool(tool_name: &str) -> Option<String> {
                 let resources_dir = contents_dir.join("Resources");
                 let builtin = resources_dir.join("tools").join(platform_dir).join(&tool_file);
                 if builtin.exists() {
+                    eprintln!("[find_builtin_tool] Found in macOS Resources: {}", builtin.display());
                     return Some(builtin.to_string_lossy().to_string());
                 }
             }
             // Windows: 可执行文件同级的 tools/ 目录
             let builtin = exe_dir.join("tools").join(platform_dir).join(&tool_file);
             if builtin.exists() {
+                eprintln!("[find_builtin_tool] Found in Windows tools: {}", builtin.display());
                 return Some(builtin.to_string_lossy().to_string());
+            }
+            // Linux: 可执行文件同级的 tools/ 目录（AppImage 或 deb 打包后）
+            #[cfg(target_os = "linux")]
+            {
+                let builtin = exe_dir.join("tools").join(platform_dir).join(&tool_file);
+                if builtin.exists() {
+                    eprintln!("[find_builtin_tool] Found in Linux tools: {}", builtin.display());
+                    return Some(builtin.to_string_lossy().to_string());
+                }
+                // 检查 Linux 打包后的常见位置
+                let parent_dir = exe_dir.parent().unwrap_or(exe_dir);
+                let builtin = parent_dir.join("share").join("phone-tools").join("tools").join(platform_dir).join(&tool_file);
+                if builtin.exists() {
+                    eprintln!("[find_builtin_tool] Found in Linux share: {}", builtin.display());
+                    return Some(builtin.to_string_lossy().to_string());
+                }
+                let builtin = parent_dir.join("resources").join("tools").join(platform_dir).join(&tool_file);
+                if builtin.exists() {
+                    eprintln!("[find_builtin_tool] Found in Linux resources: {}", builtin.display());
+                    return Some(builtin.to_string_lossy().to_string());
+                }
             }
         }
     }
@@ -152,15 +175,25 @@ pub fn find_builtin_tool(tool_name: &str) -> Option<String> {
     // 2. 检查当前工作目录下的 tools/ 目录（开发时）
     let dev_path = Path::new("tools").join(platform_dir).join(&tool_file);
     if dev_path.exists() {
+        eprintln!("[find_builtin_tool] Found in dev tools: {}", dev_path.display());
         return Some(dev_path.to_string_lossy().to_string());
     }
 
     // 3. 检查 src-tauri/tools/ 目录（开发时从项目根目录运行）
     let src_tauri_path = Path::new("src-tauri/tools").join(platform_dir).join(&tool_file);
     if src_tauri_path.exists() {
+        eprintln!("[find_builtin_tool] Found in src-tauri/tools: {}", src_tauri_path.display());
         return Some(src_tauri_path.to_string_lossy().to_string());
     }
 
+    // 4. 检查上一级目录的 src-tauri/tools/ 目录（递归查找）
+    let parent_src_tauri_path = Path::new("../src-tauri/tools").join(platform_dir).join(&tool_file);
+    if parent_src_tauri_path.exists() {
+        eprintln!("[find_builtin_tool] Found in ../src-tauri/tools: {}", parent_src_tauri_path.display());
+        return Some(parent_src_tauri_path.to_string_lossy().to_string());
+    }
+
+    eprintln!("[find_builtin_tool] Not found: {}", tool_name);
     None
 }
 
