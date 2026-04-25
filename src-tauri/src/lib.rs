@@ -7,6 +7,7 @@ pub mod state;
 pub mod utils;
 
 use state::AppState;
+use tauri::Listener;
 
 /// 启动 Tauri 应用
 pub fn run() {
@@ -146,7 +147,7 @@ pub fn run() {
 
             // 监听应用退出事件，清理子进程
             let app_handle = app.handle();
-            app_handle.listen_global("tauri://close-requested", move |_| {
+            app_handle.listen("tauri://close-requested", move |_| {
                 // 清理所有子进程
                 tokio::spawn(async {
                     if let Err(e) = crate::commands::cleanup_processes().await {

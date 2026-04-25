@@ -24,10 +24,9 @@ pub async fn cleanup_processes() -> Result<(), String> {
     stop_logcat_stream().await?;
     
     // 清理 bugreport 进程
-    if let Ok(mut guard) = BUGREPORT_CHILD.lock().await {
-        if let Some(mut child) = guard.take() {
-            let _ = child.kill().await;
-        }
+    let mut guard = BUGREPORT_CHILD.lock().await;
+    if let Some(mut child) = guard.take() {
+        let _ = child.kill().await;
     }
     
     Ok(())
