@@ -7,9 +7,11 @@ pub mod state;
 pub mod utils;
 
 use state::AppState;
+use tauri::RunEvent;
 
 /// 启动 Tauri 应用
 pub fn run() {
+    // 运行应用
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
@@ -137,15 +139,41 @@ pub fn run() {
             automation::stop_automation,
             automation::reset_automation,
         ])
-        .setup(|_app| {
+        .setup(|app| {
             // 应用初始化逻辑
             #[cfg(debug_assertions)]
             {
                 println!("Android Toolbox 启动 (调试模式)");
             }
-
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("启动 Android Toolbox 失败");
+        // 👇 关键：先 build
+        .build(tauri::generate_context!())
+        .expect("error while building tauri app")
+        // 👇 再 run（这里才有事件）
+        .run(|_app_handle, event| {
+            match event {
+                RunEvent::ExitRequested { api, .. } => {
+                    println!("应用准备退出");
+
+                    // 阻止退出（可选）
+                    // api.prevent_exit();
+                }
+                RunEvent::Exit => {
+                    println!("应用已经退出");
+                    // 终止 adb.exe 进程
+                    let _ = std::process::Command::new("taskkill")
+                        .args(["/f", "/im", "adb.exe"])
+                        .output();
+                    
+                    // 终止 hdc.exe 进程
+                    let _ = std::process::Command::new("taskkill")
+                        .args(["/f", "/im", "hdc.exe"])
+                        .output();
+
+                }
+                _ => {}
+            }
+        });
+        
 }
