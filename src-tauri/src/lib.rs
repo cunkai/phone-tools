@@ -137,12 +137,23 @@ pub fn run() {
             automation::stop_automation,
             automation::reset_automation,
         ])
-        .setup(|_app| {
+        .setup(|app| {
             // 应用初始化逻辑
             #[cfg(debug_assertions)]
             {
                 println!("Android Toolbox 启动 (调试模式)");
             }
+
+            // 监听应用退出事件，清理子进程
+            let app_handle = app.handle();
+            app_handle.listen_global("tauri://close-requested", move |_| {
+                // 清理所有子进程
+                tokio::spawn(async {
+                    if let Err(e) = crate::commands::cleanup_processes().await {
+                        eprintln!("清理子进程失败: {}", e);
+                    }
+                });
+            });
 
             Ok(())
         })

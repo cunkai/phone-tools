@@ -18,6 +18,21 @@ pub static BUGREPORT_CHILD: Mutex<Option<Child>> = Mutex::const_new(None);
 /// 全局存储日志流子进程，用于取消
 pub static LOGCAT_CHILD: Mutex<Option<Child>> = Mutex::const_new(None);
 
+/// 清理所有子进程（应用退出时调用）
+pub async fn cleanup_processes() -> Result<(), String> {
+    // 清理 logcat 进程
+    stop_logcat_stream().await?;
+    
+    // 清理 bugreport 进程
+    if let Ok(mut guard) = BUGREPORT_CHILD.lock().await {
+        if let Some(mut child) = guard.take() {
+            let _ = child.kill().await;
+        }
+    }
+    
+    Ok(())
+}
+
 /// 获取已连接的设备列表（轻量版，只获取基本信息，不调用 getprop）
 #[tauri::command]
 pub async fn get_devices(state: State<'_, AppState>) -> Result<Vec<AdbDevice>, String> {
