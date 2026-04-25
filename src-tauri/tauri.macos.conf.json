@@ -1,7 +1,8 @@
 {
 "bundle": {
     "resources": {
-      "tools/macos": "tools/macos/"
+      "tools/macos": "tools/macos/",
+      "appname/mac":""
     }
   }
 }

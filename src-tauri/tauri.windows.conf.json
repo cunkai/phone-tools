@@ -3,6 +3,13 @@
     "resources": {
       "tools/windows": "tools/windows/"
     },
-    "targets":["nsis"]
+    "targets":["nsis"],
+    "windows":{
+      "nsis":{
+        "languages": ["SimpChinese", "English"],
+        "template": "appname/windows/installer.nsi" 
+      }
+
+    }
   }
 }
