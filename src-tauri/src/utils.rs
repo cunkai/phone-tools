@@ -168,6 +168,12 @@ pub fn find_builtin_tool(tool_name: &str) -> Option<String> {
                     eprintln!("[find_builtin_tool] Found in Linux resources: {}", builtin.display());
                     return Some(builtin.to_string_lossy().to_string());
                 }
+                // Ubuntu 系统固定路径
+                let ubuntu_path = Path::new("/usr/lib/phone-tools/tools/linux").join(&tool_file);
+                if ubuntu_path.exists() {
+                    eprintln!("[find_builtin_tool] Found in Ubuntu /usr/lib: {}", ubuntu_path.display());
+                    return Some(ubuntu_path.to_string_lossy().to_string());
+                }
             }
         }
     }

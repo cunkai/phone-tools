@@ -113,7 +113,7 @@ const SettingsPage: React.FC = () => {
     try {
       const selected = await open({
         multiple: false,
-        filters: [{ name: "ADB Executable", extensions: ["exe", ""] }],
+        // 不使用过滤器，允许选择所有文件，解决 Linux 下无法选择 adb/hdc 的问题
       });
       if (selected && typeof selected === "string") {
         await handleAdbPathChange(selected);
@@ -128,7 +128,7 @@ const SettingsPage: React.FC = () => {
     try {
       const selected = await open({
         multiple: false,
-        filters: [{ name: "HDC Executable", extensions: ["exe", ""] }],
+        // 不使用过滤器，允许选择所有文件，解决 Linux 下无法选择 adb/hdc 的问题
       });
       if (selected && typeof selected === "string") {
         await handleHdcPathChange(selected);
